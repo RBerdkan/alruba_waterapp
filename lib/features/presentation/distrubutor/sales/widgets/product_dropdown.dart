@@ -21,15 +21,27 @@ class ProductDropdown extends StatelessWidget {
         border: OutlineInputBorder(),
       ),
       value: selectedProduct,
-      items: products.map((p) {
-        // Show '(Refillable)' if p.isRefillable is true
-        final displayName = p.isRefillable ? '${p.name} (قابل لإعادة التعبئة)' : p.name;
+      isExpanded: true,
+      items: products
+          .map((p) {
+            // Only show active products (should already be filtered by provider)
+            if (!p.isActive) return null;
+            // Show '(Refillable)' if p.isRefillable is true
+            final displayName =
+                p.isRefillable ? '${p.name} (قابل لإعادة التعبئة)' : p.name;
 
-        return DropdownMenuItem<Product>(
-          value: p,
-          child: Text(displayName),
-        );
-      }).toList(),
+            return DropdownMenuItem<Product>(
+              value: p,
+              child: Text(
+                displayName,
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+              ),
+            );
+          })
+          .where((item) => item != null)
+          .cast<DropdownMenuItem<Product>>()
+          .toList(),
       onChanged: onProductChanged,
       validator: (val) {
         if (val == null) {

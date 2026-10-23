@@ -92,6 +92,12 @@ class OfflineSyncService {
         }
 
         // 2. Insert sale and get generated ID
+        final createdAtString = sale.createdAt.toUtc().toIso8601String();
+        debugPrint(
+            '[OfflineSync] Sending sale with created_at: $createdAtString');
+        debugPrint('[OfflineSync] Original sale.createdAt: ${sale.createdAt}');
+        debugPrint('[OfflineSync] UTC conversion: ${sale.createdAt.toUtc()}');
+
         final resp = await client
             .from('sales')
             .insert({
@@ -102,15 +108,32 @@ class OfflineSyncService {
               'payment_status': sale.paymentStatus.toLowerCase(),
               'sold_by': sale.soldBy,
               'location_id': sale.locationId,
-              'created_at': sale.createdAt.toUtc().toIso8601String(),
+              'created_at': createdAtString,
               'sale_type': sale.saleType ?? 'normal',
-               'amount_paid': sale.amountPaid,
+              'amount_paid': sale.amountPaid,
             })
             .select('id')
             .single();
 
         if (resp.isNotEmpty) {
           final remoteSaleId = resp['id'] as String;
+
+          // Insert payment record if sale is paid or partial and amountPaid > 0
+          if ((sale.paymentStatus.toLowerCase() == 'paid' ||
+                  sale.paymentStatus.toLowerCase() == 'partial') &&
+              sale.amountPaid > 0) {
+            final now = DateTime.now();
+            final paymentDate = DateTime(now.year, now.month, now.day, now.hour,
+                    now.minute, now.second)
+                .toUtc()
+                .toIso8601String();
+            await client.from('payments').insert({
+              'sale_id': remoteSaleId,
+              'amount': sale.amountPaid,
+              'payment_date': paymentDate,
+              'note': 'دفع عند إنشاء البيع (مزامنة أوفلاين)',
+            });
+          }
 
           localToRemoteSaleIds[sale.localSaleId!] = remoteSaleId;
           // 3. Update related gallon transactions
@@ -205,6 +228,8 @@ class OfflineSyncService {
   /*  STEP 3 : gallon transactions                            */
   /*───────────────────────────────────────────────────────────*/
   Future<void> _syncGallonTransactions() async {
+    // First, ensure all customers are synced
+    await _syncLocalCustomers();
     final box =
         await Hive.openBox<OfflineGallonTransaction>(_offlineGallonTxBox);
 
@@ -213,25 +238,68 @@ class OfflineSyncService {
       if (tx == null) continue;
 
       try {
-        // Validate required fields
-        if ((tx.saleId?.isEmpty ?? true) || (tx.customerId?.isEmpty ?? true)) {
+        debugPrint('[OfflineSync] Processing gallon tx: ${tx.localTxId}');
+        debugPrint('[OfflineSync] - Type: ${tx.transactionType}');
+        debugPrint('[OfflineSync] - Customer ID: ${tx.customerId}');
+        debugPrint('[OfflineSync] - Sale ID: ${tx.saleId}');
+
+        // Validate required fields - customerId is always required, saleId only for purchase transactions
+        if ((tx.customerId?.isEmpty ?? true)) {
           debugPrint(
-              '[OfflineSync] Skipping invalid gallon tx: ${tx.localTxId}');
+              '[OfflineSync] Skipping invalid gallon tx (no customer): ${tx.localTxId}');
           continue;
+        }
+
+        // For purchase transactions, saleId is required. For deposits and returns, it's optional
+        if (tx.transactionType == 'purchase' && (tx.saleId?.isEmpty ?? true)) {
+          debugPrint(
+              '[OfflineSync] Skipping invalid purchase tx (no sale): ${tx.localTxId}');
+          continue;
+        }
+
+        // Ensure customer exists in database (for new customers created during offline transactions)
+        String finalCustomerId = tx.customerId!;
+        if (tx.customerId!.length > 20) {
+          // Likely a UUID, check if it exists
+          final customerExists = await client
+              .from('customers')
+              .select('id')
+              .eq('id', tx.customerId!)
+              .maybeSingle();
+
+          if (customerExists == null) {
+            debugPrint(
+                '[OfflineSync] Customer ${tx.customerId} not found, skipping transaction');
+            continue;
+          }
+        }
+
+        // Prepare insert data - only include sale_id if it exists
+        final createdAtString = tx.createdAt.toIso8601String();
+        debugPrint(
+            '[OfflineSync] Sending gallon tx with created_at: $createdAtString');
+        debugPrint('[OfflineSync] Original tx.createdAt: ${tx.createdAt}');
+
+        final insertData = {
+          'customer_id': finalCustomerId,
+          'product_id': tx.productId,
+          'quantity': tx.quantity,
+          'transaction_type': tx.transactionType,
+          'status': tx.status,
+          'amount': tx.amount,
+          'created_at': createdAtString,
+          // Add seller information for standalone transactions
+          'seller_id': client.auth.currentUser?.id,
+        };
+
+        // Only add sale_id if it exists (for purchase transactions)
+        if (tx.saleId != null && tx.saleId!.isNotEmpty) {
+          insertData['sale_id'] = tx.saleId;
         }
 
         final resp = await client
             .from('gallon_transactions')
-            .insert({
-              'customer_id': tx.customerId,
-              'product_id': tx.productId,
-              'quantity': tx.quantity,
-              'transaction_type': tx.transactionType,
-              'status': tx.status,
-              'amount': tx.amount,
-              'sale_id': tx.saleId,
-              'created_at': tx.createdAt.toIso8601String(),
-            })
+            .insert(insertData)
             .select('id')
             .single();
 

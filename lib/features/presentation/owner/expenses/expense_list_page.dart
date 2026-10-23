@@ -109,8 +109,8 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
               SliverPersistentHeader(
                 pinned: true,
                 delegate: _StickyHeaderDelegate(
-                  minHeight: 48,
-                  maxHeight: 48,
+                  minHeight: 0,
+                  maxHeight: 140,
                   child: _MonthHeader(
                     month: month,
                     expenses: grouped[month]!,
@@ -135,7 +135,7 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
             ]),
         SliverToBoxAdapter(
           child: SizedBox(
-            height: MediaQuery.of(context).padding.bottom + 80,
+            height: MediaQuery.of(context).padding.bottom + 120,
           ),
         ),
       ],
@@ -215,6 +215,15 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
   }
 
   Future<void> _deleteExpense(Expense exp) async {
+    // Optimistically remove from UI
+    final prevExpenses = ref.read(expenseProvider).expenses;
+    final newExpenses = List<Expense>.from(prevExpenses)
+      ..removeWhere((e) => e.id == exp.id);
+    ref.read(expenseProvider.notifier).state = ref
+        .read(expenseProvider.notifier)
+        .state
+        .copyWith(expenses: newExpenses);
+    // Call backend delete
     await ref.read(expenseProvider.notifier).deleteExpense(exp.id);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -222,7 +231,9 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
           content: const Text('Expense deleted'),
           action: SnackBarAction(
             label: 'Undo',
-            onPressed: () => ref.read(expenseProvider.notifier).addExpense(exp),
+            onPressed: () async {
+              await ref.read(expenseProvider.notifier).addExpense(exp);
+            },
           ),
         ),
       );
@@ -280,16 +291,33 @@ class _MonthHeader extends StatelessWidget {
     return Container(
       color: theme.scaffoldBackgroundColor,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Text(DateFormat('MMMM y', 'ar').format(month),
-              style: theme.textTheme.titleMedium),
-          const Spacer(),
+          Text(
+            DateFormat('MMMM y', 'ar').format(month),
+            style: theme.textTheme.titleMedium,
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 8),
           Chip(
-            label: Text(currencyFormat.format(totalAmount)),
+            label: SizedBox(
+              width: 160,
+              child: Text(
+                currencyFormat.format(totalAmount),
+                overflow: TextOverflow.ellipsis,
+                maxLines: 2,
+                textAlign: TextAlign.center,
+                style: const TextStyle(height: 1.1),
+              ),
+            ),
             backgroundColor: Colors.green.shade100,
             avatar: const Icon(Icons.summarize, size: 18, color: Colors.green),
+            padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 8),
           ),
+          const SizedBox(height: 20),
         ],
       ),
     );
@@ -390,137 +418,143 @@ class _ExpenseFormState extends State<_ExpenseForm> {
   Widget build(BuildContext context) {
     return Form(
       key: _key,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            widget.expense == null ? 'Add Expense' : 'Edit Expense',
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 16),
-          Consumer(builder: (context, ref, _) {
-            final asyncTypes = ref.watch(expenseTypesProvider);
-            return asyncTypes.when(
-              loading: () => const CircularProgressIndicator(),
-              error: (e, _) => Text('Error: $e'),
-              data: (types) => Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  DropdownButtonFormField<String>(
-                    value: _type,
-                    decoration: const InputDecoration(
-                      labelText: 'النوع',
-                      border: OutlineInputBorder(),
-                    ),
-                    items: [
-                      ...types.map((t) => DropdownMenuItem(
-                            value: t,
-                            child: Text(toBeginningOfSentenceCase(t) ?? t),
-                          )),
-                      const DropdownMenuItem(
-                        value: '_add_new_',
-                        child: Text('نوع جديد...'),
-                      ),
-                    ],
-                    onChanged: (val) {
-                      if (val == '_add_new_') {
-                        setState(() {
-                          _addingNewType = true;
-                          _type = null;
-                        });
-                      } else {
-                        setState(() {
-                          _addingNewType = false;
-                          _type = val;
-                        });
-                      }
-                    },
-                    validator: (_) {
-                      if (!_addingNewType &&
-                          (_type == null || _type!.isEmpty)) {
-                        return 'Select a type';
-                      }
-                      return null;
-                    },
-                  ),
-                  if (_addingNewType)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: TextFormField(
-                        controller: _newTypeCtrl,
+      child: Center(
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                widget.expense == null ? 'Add Expense' : 'Edit Expense',
+                style:
+                    const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 16),
+              Consumer(builder: (context, ref, _) {
+                final asyncTypes = ref.watch(expenseTypesProvider);
+                return asyncTypes.when(
+                  loading: () => const CircularProgressIndicator(),
+                  error: (e, _) => Text('Error: $e'),
+                  data: (types) => Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      DropdownButtonFormField<String>(
+                        value: _type,
                         decoration: const InputDecoration(
-                          labelText: 'نوع جديد',
+                          labelText: 'النوع',
                           border: OutlineInputBorder(),
                         ),
-                        validator: (v) {
-                          if (_addingNewType &&
-                              (v == null || v.trim().isEmpty)) {
-                            return 'Enter a type';
+                        items: [
+                          ...types.map((t) => DropdownMenuItem(
+                                value: t,
+                                child: Text(toBeginningOfSentenceCase(t) ?? t),
+                              )),
+                          const DropdownMenuItem(
+                            value: '_add_new_',
+                            child: Text('نوع جديد...'),
+                          ),
+                        ],
+                        onChanged: (val) {
+                          if (val == '_add_new_') {
+                            setState(() {
+                              _addingNewType = true;
+                              _type = null;
+                            });
+                          } else {
+                            setState(() {
+                              _addingNewType = false;
+                              _type = val;
+                            });
+                          }
+                        },
+                        validator: (_) {
+                          if (!_addingNewType &&
+                              (_type == null || _type!.isEmpty)) {
+                            return 'Select a type';
                           }
                           return null;
                         },
                       ),
-                    ),
-                ],
+                      if (_addingNewType)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: TextFormField(
+                            controller: _newTypeCtrl,
+                            decoration: const InputDecoration(
+                              labelText: 'نوع جديد',
+                              border: OutlineInputBorder(),
+                            ),
+                            validator: (v) {
+                              if (_addingNewType &&
+                                  (v == null || v.trim().isEmpty)) {
+                                return 'Enter a type';
+                              }
+                              return null;
+                            },
+                          ),
+                        ),
+                    ],
+                  ),
+                );
+              }),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _amountCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'المبلغ',
+                  border: OutlineInputBorder(),
+                  prefixText: 'LBP ',
+                ),
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [ThousandsFormatter()],
+                validator: (v) {
+                  if (v == null || v.isEmpty) return 'Required';
+                  final cleaned = toNumericString(v);
+                  final d = double.tryParse(cleaned);
+                  if (d == null || d <= 0) return 'Invalid';
+                  return null;
+                },
               ),
-            );
-          }),
-          const SizedBox(height: 12),
-          TextFormField(
-            controller: _amountCtrl,
-            decoration: const InputDecoration(
-              labelText: 'المبلغ',
-              border: OutlineInputBorder(),
-              prefixText: 'LBP ',
-            ),
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            inputFormatters: [ThousandsFormatter()],
-            validator: (v) {
-              if (v == null || v.isEmpty) return 'Required';
-              final cleaned = toNumericString(v);
-              final d = double.tryParse(cleaned);
-              if (d == null || d <= 0) return 'Invalid';
-              return null;
-            },
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _descCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'الوصف (اختياري)',
+                  border: OutlineInputBorder(),
+                ),
+                minLines: 1,
+                maxLines: 3,
+              ),
+              const SizedBox(height: 12),
+              ListTile(
+                tileColor: Colors.grey.shade200,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                title: Text('Date: ${DateFormat.yMMMd('ar').format(_date)}'),
+                trailing: const Icon(Icons.calendar_today),
+                onTap: () async {
+                  final picked = await showDatePicker(
+                    context: context,
+                    initialDate: _date,
+                    firstDate: DateTime(2000),
+                    lastDate: DateTime.now(),
+                  );
+                  if (picked != null) setState(() => _date = picked);
+                },
+              ),
+              const SizedBox(height: 20),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.save),
+                label: Text(widget.expense == null ? 'Add Expense' : 'Save'),
+                onPressed: _submit,
+                style: ElevatedButton.styleFrom(
+                  minimumSize: const Size(double.infinity, 48),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 12),
-          TextFormField(
-            controller: _descCtrl,
-            decoration: const InputDecoration(
-              labelText: 'الوصف (اختياري)',
-              border: OutlineInputBorder(),
-            ),
-            minLines: 1,
-            maxLines: 3,
-          ),
-          const SizedBox(height: 12),
-          ListTile(
-            tileColor: Colors.grey.shade200,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
-            title: Text('Date: ${DateFormat.yMMMd('ar').format(_date)}'),
-            trailing: const Icon(Icons.calendar_today),
-            onTap: () async {
-              final picked = await showDatePicker(
-                context: context,
-                initialDate: _date,
-                firstDate: DateTime(2000),
-                lastDate: DateTime.now(),
-              );
-              if (picked != null) setState(() => _date = picked);
-            },
-          ),
-          const SizedBox(height: 20),
-          ElevatedButton.icon(
-            icon: const Icon(Icons.save),
-            label: Text(widget.expense == null ? 'Add Expense' : 'Save'),
-            onPressed: _submit,
-            style: ElevatedButton.styleFrom(
-              minimumSize: const Size(double.infinity, 48),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }

@@ -62,8 +62,8 @@ class LocationListPage extends ConsumerWidget {
               builder: (_) => const AddLocationPage(),
             );
           },
-          child: const Icon(Icons.add),
           tooltip: 'إضافة موقع',
+          child: const Icon(Icons.add),
         ),
       ),
     );

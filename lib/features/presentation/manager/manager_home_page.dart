@@ -28,12 +28,12 @@ class ManagerHomePage extends ConsumerStatefulWidget {
 class _ManagerHomePageState extends ConsumerState<ManagerHomePage> {
   int _currentIndex = 0;
 
-  final List<Widget> _pages = const [
-    ManagerDashboardPage(),
-    SalesQueuePage(),
-    GallonTransactionStatusPage(),
-    CustomerDetailsPage(),
-    ManagerCashflowPage(),
+  final List<Widget> _pages = [
+    const ManagerDashboardPage(),
+    const SalesQueuePage(),
+    const GallonTransactionStatusPage(),
+    const CustomerDetailsPage(),
+    const ManagerCashflowPage(),
   ];
 
   static const _navItems = [
@@ -55,10 +55,10 @@ class _ManagerHomePageState extends ConsumerState<ManagerHomePage> {
         elevation: 2,
         actions: [
           const LogoutButton(fullWidth: false),
-          const SizedBox(width: 30),
-          const Text('Manager Home',
+          const SizedBox(width: 10),
+          const Text('Manager',
               style: TextStyle(fontWeight: FontWeight.w600, fontSize: 20)),
-          const SizedBox(width: 30),
+          const SizedBox(width: 10),
           IconButton(
             icon: const Icon(Icons.money_off, color: Colors.white),
             tooltip: 'Unpaid customers',
@@ -101,7 +101,7 @@ class _ManagerHomePageState extends ConsumerState<ManagerHomePage> {
         type: BottomNavigationBarType.fixed,
         backgroundColor: theme.colorScheme.surface,
         selectedItemColor: theme.colorScheme.primary,
-        unselectedItemColor: theme.colorScheme.onSurface.withOpacity(0.6),
+        unselectedItemColor: theme.colorScheme.onSurface.withValues(alpha: 0.6),
         showUnselectedLabels: true,
         elevation: 8,
         items: _navItems.map((item) {
@@ -112,7 +112,7 @@ class _ManagerHomePageState extends ConsumerState<ManagerHomePage> {
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
                 color: isSelected
-                    ? theme.colorScheme.primary.withOpacity(0.1)
+                    ? theme.colorScheme.primary.withValues(alpha: 0.1)
                     : Colors.transparent,
                 borderRadius: BorderRadius.circular(8),
               ),

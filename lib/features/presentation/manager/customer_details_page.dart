@@ -184,7 +184,8 @@ class _CustomerDetailsPageState extends ConsumerState<CustomerDetailsPage> {
   List<Map<String, dynamic>> _filterCustomers(
       List<Map<String, dynamic>> customers) {
     return customers.where((customer) {
-      if (_locationFilter != null && customer['location_id'] != _locationFilter) {
+      if (_locationFilter != null &&
+          customer['location_id'] != _locationFilter) {
         return false;
       }
       if (_customerTypeFilter != null &&
@@ -205,7 +206,9 @@ class _CustomerDetailsPageState extends ConsumerState<CustomerDetailsPage> {
     final locations = ref.watch(locationsProvider).value ?? [];
 
     return RefreshIndicator(
-      onRefresh: () => ref.refresh(customersProvider.future),
+      onRefresh: () async {
+        ref.refresh(customersProvider.future);
+      },
       child: customersAsync.when(
         data: (customers) {
           final filtered = _filterCustomers(customers);
@@ -277,10 +280,14 @@ class _CustomerCard extends ConsumerWidget {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(
-                  customer['name'] ?? 'غير معروف',
-                  style: theme.textTheme.titleMedium
-                      ?.copyWith(fontWeight: FontWeight.w600),
+                Expanded(
+                  child: Text(
+                    customer['name'] ?? 'غير معروف',
+                    style: theme.textTheme.titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w600),
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                  ),
                 ),
                 Chip(
                   label: Text(
@@ -307,21 +314,20 @@ class _CustomerCard extends ConsumerWidget {
                       'لا يوجد عنوان'),
             ),
             const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
+            Wrap(
+              alignment: WrapAlignment.end,
+              spacing: 12,
               children: [
                 TextButton.icon(
                   icon: const Icon(Icons.call),
                   label: const Text('اتصال'),
                   onPressed: onCall,
                 ),
-                const SizedBox(width: 12),
                 TextButton.icon(
                   icon: const Icon(Icons.map),
                   label: const Text('خريطة'),
                   onPressed: onMap,
                 ),
-                const SizedBox(width: 12),
                 TextButton.icon(
                   icon: const Icon(Icons.edit),
                   label: const Text('تعديل'),
@@ -332,7 +338,7 @@ class _CustomerCard extends ConsumerWidget {
                         builder: (_) => EditCustomerPage(customer: customer),
                       ),
                     );
-                    
+
                     if (updated == true) {
                       ref.invalidate(customersProvider); // Force refresh
                     }
@@ -359,7 +365,13 @@ class _InfoRow extends StatelessWidget {
       children: [
         Icon(icon, size: 20, color: Colors.grey),
         const SizedBox(width: 12),
-        Expanded(child: Text(text)),
+        Expanded(
+          child: Text(
+            text,
+            overflow: TextOverflow.ellipsis,
+            maxLines: 1,
+          ),
+        ),
       ],
     );
   }

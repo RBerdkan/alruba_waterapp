@@ -1,22 +1,26 @@
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:alruba_waterapp/providers/location_provider.dart';
 
-class EditCustomerPage extends StatefulWidget {
+class EditCustomerPage extends ConsumerStatefulWidget {
   final Map<String, dynamic> customer;
 
   const EditCustomerPage({super.key, required this.customer});
 
   @override
-  State<EditCustomerPage> createState() => _EditCustomerPageState();
+  ConsumerState<EditCustomerPage> createState() => _EditCustomerPageState();
 }
 
-class _EditCustomerPageState extends State<EditCustomerPage> {
+class _EditCustomerPageState extends ConsumerState<EditCustomerPage> {
   final _formKey = GlobalKey<FormState>();
 
   late String _name;
   late String _phone;
   String? _preciseLocation;
+  String? _type;
+  String? _locationId;
 
   @override
   void initState() {
@@ -24,76 +28,83 @@ class _EditCustomerPageState extends State<EditCustomerPage> {
     _name = widget.customer['name'] ?? '';
     _phone = widget.customer['phone'] ?? '';
     _preciseLocation = widget.customer['precise_location'] as String?;
+    _type = widget.customer['type'] ?? 'regular';
+    _locationId = widget.customer['location_id'] as String?;
   }
 
   Future<void> _saveCustomer() async {
-  if (!_formKey.currentState!.validate()) return;
-  _formKey.currentState!.save();
+    if (!_formKey.currentState!.validate()) return;
+    _formKey.currentState!.save();
 
-  Map<String, dynamic> updatedFields = {};
+    Map<String, dynamic> updatedFields = {};
 
-  if (_name != widget.customer['name']) {
-    updatedFields['name'] = _name;
+    if (_name != widget.customer['name']) {
+      updatedFields['name'] = _name;
+    }
+    if (_phone != widget.customer['phone']) {
+      updatedFields['phone'] = _phone;
+    }
+    if (_preciseLocation != null &&
+        _preciseLocation!.isNotEmpty &&
+        _preciseLocation != widget.customer['precise_location']) {
+      updatedFields['precise_location'] = _preciseLocation;
+    }
+    if (_type != null && _type != widget.customer['type']) {
+      updatedFields['type'] = _type;
+    }
+    if (_locationId != null && _locationId != widget.customer['location_id']) {
+      updatedFields['location_id'] = _locationId;
+    }
+
+    if (updatedFields.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('لا توجد تغييرات ليتم تحديثها'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    try {
+      await Supabase.instance.client
+          .from('customers')
+          .update(updatedFields)
+          .eq('id', widget.customer['id']);
+
+      if (!mounted) return;
+      await showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          title: const Text('تم التحديث'),
+          content: const Text('تم تحديث البيانات بنجاح'),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(context);
+                Navigator.pop(context, true);
+              },
+              child: const Text('موافق'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('خطأ في التحديث: ${e.toString()}'),
+          backgroundColor: Colors.red,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
-  if (_phone != widget.customer['phone']) {
-    updatedFields['phone'] = _phone;
-  }
-
-  if (_preciseLocation != null &&
-      _preciseLocation!.isNotEmpty &&
-      _preciseLocation != widget.customer['precise_location']) {
-    updatedFields['precise_location'] = _preciseLocation;
-  }
-
-  if (updatedFields.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('لا توجد تغييرات ليتم تحديثها'),
-        backgroundColor: Colors.orange,
-      ),
-    );
-    return;
-  }
-
-  try {
-    await Supabase.instance.client
-        .from('customers')
-        .update(updatedFields)
-        .eq('id', widget.customer['id']);
-
-    // Show success dialog instead of SnackBar
-    if (!mounted) return;
-    await showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text('تم التحديث'),
-        content: const Text('تم تحديث البيانات بنجاح'),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context); // Close the dialog
-              Navigator.pop(context, true); // Close the edit page
-            },
-            child: const Text('موافق'),
-          ),
-        ],
-      ),
-    );
-  } catch (e) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('خطأ في التحديث: ${e.toString()}'),
-        backgroundColor: Colors.red,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-}
 
   @override
   Widget build(BuildContext context) {
+    final locationsAsync = ref.watch(locationsProvider);
     return Scaffold(
       appBar: AppBar(
         title: const Text('تعديل بيانات الزبون'),
@@ -134,6 +145,40 @@ class _EditCustomerPageState extends State<EditCustomerPage> {
                   }
                   return null;
                 },
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<String>(
+                value: _type,
+                decoration: const InputDecoration(
+                  labelText: 'نوع العميل',
+                  border: OutlineInputBorder(),
+                ),
+                items: const [
+                  DropdownMenuItem(value: 'regular', child: Text('عادي')),
+                  DropdownMenuItem(value: 'distributor', child: Text('موزع')),
+                ],
+                onChanged: (val) => setState(() => _type = val),
+                onSaved: (val) => _type = val,
+              ),
+              const SizedBox(height: 16),
+              locationsAsync.when(
+                data: (locations) => DropdownButtonFormField<String>(
+                  value: _locationId,
+                  decoration: const InputDecoration(
+                    labelText: 'المنطقة',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: locations
+                      .map((loc) => DropdownMenuItem(
+                            value: loc.id,
+                            child: Text(loc.name),
+                          ))
+                      .toList(),
+                  onChanged: (val) => setState(() => _locationId = val),
+                  onSaved: (val) => _locationId = val,
+                ),
+                loading: () => const Center(child: CircularProgressIndicator()),
+                error: (err, _) => Text('خطأ في تحميل المناطق: $err'),
               ),
               const SizedBox(height: 16),
               const Text(

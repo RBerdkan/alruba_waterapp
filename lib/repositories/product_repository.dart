@@ -8,14 +8,15 @@ final productRepositoryProvider = Provider<ProductRepository>((ref) {
 
 class ProductRepository {
   // Fetch all products
-  Future<List<Product>> fetchProducts() async {
-    // CHANGED: select('id, name, home_price, market_price, production_cost, is_refillable')
-    final response = await SupabaseService.client
-        .from('products')
-        .select('id, name, home_price, market_price, production_cost, is_refillable'); 
-
-    // parse JSON into Product objects
-    return response.map<Product>((item) => Product.fromMap(item)).toList();
+  Future<List<Product>> fetchProducts({bool onlyActive = true}) async {
+    final response = await SupabaseService.client.from('products').select(
+        'id, name, home_price, market_price, production_cost, is_refillable, is_active');
+    final products =
+        response.map<Product>((item) => Product.fromMap(item)).toList();
+    if (onlyActive) {
+      return products.where((p) => p.isActive).toList();
+    }
+    return products;
   }
 
   // Add a new product - returns the newly created row
@@ -67,5 +68,19 @@ class ProductRepository {
       throw Exception('No data returned from product update');
     }
     return Product.fromMap(updated);
+  }
+
+  // Soft delete (archive) a product
+  Future<void> archiveProduct(String productId) async {
+    await SupabaseService.client
+        .from('products')
+        .update({'is_active': false}).eq('id', productId);
+  }
+
+  // Reactivate a product
+  Future<void> reactivateProduct(String productId) async {
+    await SupabaseService.client
+        .from('products')
+        .update({'is_active': true}).eq('id', productId);
   }
 }

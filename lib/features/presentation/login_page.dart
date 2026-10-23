@@ -60,61 +60,66 @@ class _LoginPageState extends ConsumerState<LoginPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Padding(
-        padding: const EdgeInsets.all(24.0),
-        child: Form(
-          key: _formKey,
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                'الربى لتوزيع المياه',
-                style: AppTextStyles.headline.copyWith(fontSize: 32),
-              ),
-              const SizedBox(height: 40),
-              TextFormField(
-                controller: _emailController,
-                decoration: const InputDecoration(
-                  labelText: 'البريد الإلكتروني',
-                  hintText: 'أدخل بريدك الإلكتروني',
-                  border: OutlineInputBorder(),
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24.0),
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  'الربى لتوزيع المياه',
+                  style: AppTextStyles.headline.copyWith(fontSize: 32),
                 ),
-                validator: (value) =>
-                    value == null || value.isEmpty ? 'يرجى إدخال البريد الإلكتروني' : null,
-                keyboardType: TextInputType.emailAddress,
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _passwordController,
-                obscureText: true,
-                decoration: const InputDecoration(
-                  labelText: 'كلمة المرور',
-                  hintText: 'أدخل كلمة المرور',
-                  border: OutlineInputBorder(),
+                const SizedBox(height: 40),
+                TextFormField(
+                  controller: _emailController,
+                  decoration: const InputDecoration(
+                    labelText: 'البريد الإلكتروني',
+                    hintText: 'أدخل بريدك الإلكتروني',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (value) => value == null || value.isEmpty
+                      ? 'يرجى إدخال البريد الإلكتروني'
+                      : null,
+                  keyboardType: TextInputType.emailAddress,
                 ),
-                validator: (value) =>
-                    value == null || value.isEmpty ? 'يرجى إدخال كلمة المرور' : null,
-              ),
-              const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: _isLoading ? null : _handleLogin,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                  minimumSize: const Size(double.infinity, 50),
-                  padding: const EdgeInsets.symmetric(vertical: 15),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: _passwordController,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'كلمة المرور',
+                    hintText: 'أدخل كلمة المرور',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (value) => value == null || value.isEmpty
+                      ? 'يرجى إدخال كلمة المرور'
+                      : null,
                 ),
-                child: _isLoading
-                    ? const CircularProgressIndicator(color: Colors.white)
-                    : const Text('تسجيل الدخول', style: AppTextStyles.button),
-              ),
-              if (_isLoading) const SizedBox(height: 20),
-              TextButton(
-                onPressed: () {
-                  context.push('/signup');
-                },
-                child: const Text('إنشاء حساب'),
-              ),
-            ],
+                const SizedBox(height: 24),
+                ElevatedButton(
+                  onPressed: _isLoading ? null : _handleLogin,
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    minimumSize: const Size(double.infinity, 50),
+                    padding: const EdgeInsets.symmetric(vertical: 15),
+                  ),
+                  child: _isLoading
+                      ? const CircularProgressIndicator(color: Colors.white)
+                      : const Text('تسجيل الدخول', style: AppTextStyles.button),
+                ),
+                if (_isLoading) const SizedBox(height: 20),
+                TextButton(
+                  onPressed: () {
+                    context.push('/signup');
+                  },
+                  child: const Text('إنشاء حساب'),
+                ),
+              ],
+            ),
           ),
         ),
       ),
