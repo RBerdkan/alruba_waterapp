@@ -115,10 +115,14 @@ class ExpenseProvider extends StateNotifier<ExpenseState> {
 
   Future<void> deleteExpense(String id) async {
     try {
+      print('[DEBUG] Attempting to delete expense with id: $id');
       await _repository.deleteExpense(id);
+      print('[DEBUG] Successfully deleted expense with id: $id');
       await loadExpenses();
     } catch (e) {
-      state = state.copyWith(error: e.toString());
+      print('[DEBUG][ERROR] Failed to delete expense with id: $id. Error: $e');
+      state =
+          state.copyWith(error: 'Failed to delete expense: ${e.toString()}');
     }
   }
 }

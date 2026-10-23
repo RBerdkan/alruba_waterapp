@@ -34,6 +34,7 @@ class _MakeSalePageState extends ConsumerState<MakeSalePage> {
   String? _existingCustomerName;
   String? _existingCustomerPhone;
   String? _existingCustomerLocation;
+  String? _existingCustomerType;
 
   String? _newCustomerName;
   String? _newCustomerPhone;
@@ -54,6 +55,8 @@ class _MakeSalePageState extends ConsumerState<MakeSalePage> {
   // ---------------------------- Payment ----------------------------
   String _paymentStatus = 'Paid';
   List<String> _paymentOptions = ['Paid', 'Unpaid'];
+  final TextEditingController _partialPaymentController =
+      TextEditingController();
 
   @override
   void initState() {
@@ -66,6 +69,7 @@ class _MakeSalePageState extends ConsumerState<MakeSalePage> {
   void dispose() {
     _priceController.dispose();
     _quantityController.dispose();
+    _partialPaymentController.dispose();
     super.dispose();
   }
 
@@ -79,7 +83,15 @@ class _MakeSalePageState extends ConsumerState<MakeSalePage> {
 
   void _autoFillPrice() {
     if (_selectedProduct == null) return;
-    final isDist = _isNewCustomer && _newCustomerType == 'distributor';
+
+    // Determine if customer is distributor
+    bool isDist = false;
+    if (_isNewCustomer) {
+      isDist = _newCustomerType == 'distributor';
+    } else {
+      isDist = _existingCustomerType == 'distributor';
+    }
+
     final price =
         isDist ? _selectedProduct!.marketPrice : _selectedProduct!.homePrice;
     _priceController.text = price.toStringAsFixed(2);
@@ -95,106 +107,220 @@ class _MakeSalePageState extends ConsumerState<MakeSalePage> {
 
   String _defaultLocationId() => '17c1cb39-7b97-494b-be85-bae7290cd54c';
 
-  Future<void> _submitFormOffline() async {
-    // 1) Block if new customer but precise location not ready
-    if (_isNewCustomer && _preciseLocation == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content:
-                Text('.يرجى الانتظار حتى يتم تحميل الموقع الدقيق بالكامل')),
-      );
-      return;
-    }
-
-    // 2) Standard form validation
+  Future<void> _submitSale() async {
     if (!_formKey.currentState!.validate()) return;
-    if (!_isNewCustomer &&
-        (_existingCustomerId == null || _existingCustomerId!.isEmpty)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('.الرجاء اختيار عميل موجود')),
-      );
-      return;
-    }
-
     _formKey.currentState!.save();
 
-    // 3) Determine locationId
-    final locationId = _isNewCustomer
-        ? (_newCustomerLocation ?? _defaultLocationId())
-        : (_existingCustomerLocation ?? _defaultLocationId());
+    // 1) Validate required fields
+    if (_selectedProduct == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('يرجى اختيار منتج')),
+      );
+      return;
+    }
 
-    // 4) Save new customer locally if needed
+    if (_isNewCustomer && (_newCustomerName?.isEmpty ?? true)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('يرجى إدخال اسم العميل')),
+      );
+      return;
+    }
+
+    if (_isNewCustomer && (_newCustomerPhone?.isEmpty ?? true)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('يرجى إدخال رقم الهاتف')),
+      );
+      return;
+    }
+
+    // 2) Get location ID
+    final locationsAsync = ref.read(locationsProvider);
+    final locationId = await locationsAsync.when(
+      data: (locations) => locations.isNotEmpty ? locations.first.id : null,
+      loading: () => null,
+      error: (_, __) => null,
+    );
+
+    if (locationId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('خطأ في تحميل المواقع')),
+      );
+      return;
+    }
+
+    // 3) Handle customer (create new or use existing)
     String? customerId;
     if (_isNewCustomer) {
-      final newLocalCustomer = Customer(
-        name: _newCustomerName ?? 'Unknown Customer',
-        phone: _newCustomerPhone ?? '',
-        type: _newCustomerType ?? 'regular',
-        locationId: locationId,
-        preciseLocation: _preciseLocation,
-      );
-      final customerBox = await Hive.openBox<Customer>('offline_customers');
-      await customerBox.add(newLocalCustomer);
-      customerId = null;
+      // Create new customer
+      try {
+        final response = await Supabase.instance.client
+            .from('customers')
+            .insert({
+              'name': _newCustomerName,
+              'phone': _newCustomerPhone,
+              'type': _newCustomerType ?? 'regular',
+              'assigned_to': Supabase.instance.client.auth.currentUser?.id,
+              'location_id': locationId,
+              'precise_location': _preciseLocation,
+            })
+            .select('id')
+            .single();
+        customerId = response['id'] as String;
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('خطأ في إنشاء العميل: $e')),
+        );
+        return;
+      }
     } else {
       customerId = _existingCustomerId;
     }
-    String determineSaleType() {
-      if (_selectedProduct?.isRefillable == true) {
-        if (_paymentStatus.toLowerCase() == 'deposit') {
-          return 'deposit_given';
-        }
-      }
 
-      // Later, you can expand with 'deposit_paid' or 'deposit_returned' when needed
-      return 'normal';
+    if (customerId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('خطأ في تحديد العميل')),
+      );
+      return;
     }
 
-    // 5) Build and queue OfflineSale
-    final saleId = const Uuid().v4();
-    final offlineSale = OfflineSale(
+    // 4) Handle deposit (trust) logic
+    if (_paymentStatus.toLowerCase() == 'deposit') {
+      // Only create a gallon_transaction with transaction_type = 'deposit'
+      try {
+        final localTxId = const Uuid().v4();
+
+        final gallonTx = OfflineGallonTransaction(
+          localTxId: localTxId,
+          saleLocalId: '', // No sale for deposit
+          customerId: customerId,
+          productId: _selectedProduct!.id,
+          quantity: int.tryParse(_quantityController.text) ?? 0,
+          transactionType: 'deposit',
+          status: 'deposit',
+          amount: 0.0,
+          saleId: null,
+          customerName:
+              _isNewCustomer ? _newCustomerName : _existingCustomerName,
+          productName: _selectedProduct!.name,
+          createdAt: DateTime.now().toUtc(),
+        );
+        await OfflineGallonQueue.addTransaction(gallonTx);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('تم تسجيل الجالونات كوديعة (ثقة) للعميل'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+        _formKey.currentState!.reset();
+        setState(() {
+          _selectedProduct = null;
+          _existingCustomerId = null;
+          _existingCustomerName = null;
+          _existingCustomerPhone = null;
+          _existingCustomerType = null;
+          _newCustomerName = null;
+          _newCustomerPhone = null;
+          _newCustomerType = null;
+          _preciseLocation = null;
+          _totalPrice = 0.0;
+        });
+        return;
+      } catch (e) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('خطأ في تسجيل الوديعة: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+    }
+
+    // 5) Handle normal paid/unpaid sale
+    double amountPaid = 0.0;
+    if (_paymentStatus.toLowerCase() == 'paid') {
+      amountPaid = _totalPrice;
+    } else if (_paymentStatus.toLowerCase() == 'unpaid') {
+      amountPaid = 0.0;
+    }
+
+    try {
+      final localSaleId = const Uuid().v4();
+
+      final offlineSale = OfflineSale(
         isNewCustomer: _isNewCustomer,
         newCustomerPhone: _isNewCustomer ? _newCustomerPhone : null,
-        existingCustomerId: customerId,
+        existingCustomerId: !_isNewCustomer ? _existingCustomerId : null,
         customerName: _isNewCustomer ? _newCustomerName : _existingCustomerName,
-        customerPhone:
-            _isNewCustomer ? _newCustomerPhone : _existingCustomerPhone,
-        productId: _selectedProduct?.id,
-        productName: _selectedProduct?.name,
+        productId: _selectedProduct!.id,
+        productName: _selectedProduct!.name,
         pricePerUnit: double.tryParse(_priceController.text) ?? 0.0,
         quantity: int.tryParse(_quantityController.text) ?? 0,
         totalPrice: _totalPrice,
-        paymentStatus: _paymentStatus,
+        paymentStatus: _paymentStatus.toLowerCase(),
         createdAt: DateTime.now().toUtc(),
-        soldBy: Supabase.instance.client.auth.currentUser?.id ?? 'unknown',
+        customerPhone:
+            _isNewCustomer ? _newCustomerPhone : _existingCustomerPhone,
+        soldBy: Supabase.instance.client.auth.currentUser?.id ?? '',
         locationId: locationId,
-        localSaleId: saleId,
-        saleType: determineSaleType());
-
-    await OfflineSalesQueue.addSale(offlineSale);
-
-    // 6) Queue gallon transaction if refillable
-    if (_selectedProduct?.isRefillable == true) {
-      final tx = OfflineGallonTransaction(
-        localTxId: const Uuid().v4(), // Generate new UUID
-        saleLocalId: saleId, // Use the same saleId from OfflineSale
-        customerId: customerId ?? 'unknown',
-        productId: _selectedProduct!.id,
-        quantity: int.tryParse(_quantityController.text) ?? 0,
-        transactionType:
-            _paymentStatus.toLowerCase() == 'deposit' ? 'deposit' : 'purchase',
-        status: _paymentStatus.toLowerCase(),
-        amount: _totalPrice,
-        createdAt: DateTime.now(),
-        saleId: saleId,
+        localSaleId: localSaleId,
+        saleType: 'normal',
+        amountPaid: amountPaid,
       );
-      await OfflineGallonQueue.addTransaction(tx);
-    }
+      await OfflineSalesQueue.addSale(offlineSale);
 
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Sale queued for sync!')),
-    );
+      // If product is refillable, queue a gallon transaction for purchase
+      if (_selectedProduct?.isRefillable == true) {
+        final localTxId = const Uuid().v4();
+
+        final gallonTx = OfflineGallonTransaction(
+          localTxId: localTxId,
+          saleLocalId: localSaleId,
+          customerId: customerId,
+          productId: _selectedProduct!.id,
+          quantity: int.tryParse(_quantityController.text) ?? 0,
+          transactionType: 'purchase',
+          status: _paymentStatus.toLowerCase(),
+          amount: _totalPrice,
+          saleId: null, // Will be set after sync
+          createdAt: DateTime.now().toUtc(),
+        );
+        await OfflineGallonQueue.addTransaction(gallonTx);
+      }
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('تمت إضافة البيع إلى قائمة الانتظار (غير متزامن بعد)'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+
+      // Clear form
+      _formKey.currentState!.reset();
+      setState(() {
+        _selectedProduct = null;
+        _existingCustomerId = null;
+        _existingCustomerName = null;
+        _existingCustomerPhone = null;
+        _existingCustomerType = null;
+        _newCustomerName = null;
+        _newCustomerPhone = null;
+        _newCustomerType = null;
+        _preciseLocation = null;
+        _totalPrice = 0.0;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('خطأ في إضافة البيع إلى قائمة الانتظار: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   @override
@@ -247,6 +373,7 @@ class _MakeSalePageState extends ConsumerState<MakeSalePage> {
                                 _existingCustomerName = null;
                                 _existingCustomerPhone = null;
                                 _existingCustomerLocation = null;
+                                _existingCustomerType = null;
                                 _newCustomerName = null;
                                 _newCustomerPhone = null;
                                 _newCustomerType = null;
@@ -272,6 +399,7 @@ class _MakeSalePageState extends ConsumerState<MakeSalePage> {
                                       'name': c['name'].toString(),
                                       'phone': c['phone'].toString(),
                                       'locationId': c['location_id'].toString(),
+                                      'type': c['type'].toString(),
                                     })
                                 .toList();
                             return Column(
@@ -287,8 +415,18 @@ class _MakeSalePageState extends ConsumerState<MakeSalePage> {
                                       context: context,
                                       isScrollControlled: true,
                                       backgroundColor: Colors.transparent,
-                                      builder: (ctx) => _CustomerSearchSheet(
-                                          customers: mapped),
+                                      enableDrag: true,
+                                      isDismissible: true,
+                                      builder: (ctx) => Padding(
+                                        padding: EdgeInsets.only(
+                                          bottom: MediaQuery.of(context)
+                                              .viewInsets
+                                              .bottom,
+                                        ),
+                                        child: _CustomerSearchSheet(
+                                          customers: mapped,
+                                        ),
+                                      ),
                                     );
                                     if (chosen != null) {
                                       setState(() {
@@ -298,7 +436,10 @@ class _MakeSalePageState extends ConsumerState<MakeSalePage> {
                                             chosen['phone'];
                                         _existingCustomerLocation =
                                             chosen['locationId'];
+                                        _existingCustomerType = chosen['type'];
                                       });
+                                      // Auto-fill price based on customer type
+                                      _autoFillPrice();
                                     }
                                   },
                                 ),
@@ -316,14 +457,31 @@ class _MakeSalePageState extends ConsumerState<MakeSalePage> {
                                       children: [
                                         const Icon(Icons.person_pin),
                                         const SizedBox(width: 8),
-                                        Text(_existingCustomerName!,
-                                            style: theme.textTheme.bodyMedium
-                                                ?.copyWith(
-                                                    fontWeight:
-                                                        FontWeight.w600)),
+                                        Expanded(
+                                          child: Text(_existingCustomerName!,
+                                              style: theme.textTheme.bodyMedium
+                                                  ?.copyWith(
+                                                      fontWeight:
+                                                          FontWeight.w600)),
+                                        ),
                                         const SizedBox(width: 8),
                                         Text('(${_existingCustomerPhone!})',
                                             style: theme.textTheme.bodySmall),
+                                        const SizedBox(width: 8),
+                                        Chip(
+                                          label: Text(
+                                            (_existingCustomerType ==
+                                                    'distributor')
+                                                ? 'موزع'
+                                                : (_existingCustomerType ==
+                                                        'regular')
+                                                    ? 'عادي'
+                                                    : 'غير معروف',
+                                          ),
+                                          backgroundColor: theme
+                                              .colorScheme.secondary
+                                              .withAlpha(26),
+                                        ),
                                       ],
                                     ),
                                   ),
@@ -470,10 +628,34 @@ class _MakeSalePageState extends ConsumerState<MakeSalePage> {
                       const SizedBox(height: 16),
                       PaymentSection(
                         paymentStatus: _paymentStatus,
-                        onPaymentStatusChanged: (val) =>
-                            setState(() => _paymentStatus = val ?? 'Paid'),
                         paymentOptions: _paymentOptions,
+                        onPaymentStatusChanged: (val) {
+                          setState(() {
+                            _paymentStatus = val ?? 'Paid';
+                          });
+                        },
                       ),
+                      if (_paymentStatus.toLowerCase() == 'partial')
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 8.0),
+                          child: TextFormField(
+                            controller: _partialPaymentController,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(
+                              labelText: 'المبلغ المدفوع جزئياً',
+                              border: OutlineInputBorder(),
+                            ),
+                            validator: (val) {
+                              if (_paymentStatus.toLowerCase() == 'partial') {
+                                final v = double.tryParse(val ?? '');
+                                if (v == null || v <= 0 || v >= _totalPrice) {
+                                  return 'يرجى إدخال مبلغ جزئي صحيح أقل من المجموع';
+                                }
+                              }
+                              return null;
+                            },
+                          ),
+                        ),
                     ],
                   ),
                 ),
@@ -482,7 +664,7 @@ class _MakeSalePageState extends ConsumerState<MakeSalePage> {
               // ── Submit Button ───────────────────────────────────────────────────
               SaleFormSubmitButton(
                 onPressed: canSubmit
-                    ? _submitFormOffline
+                    ? _submitSale
                     : () {
                         ScaffoldMessenger.of(context)
                             .showSnackBar(const SnackBar(
@@ -525,7 +707,9 @@ class _CustomerSearchSheetState extends State<_CustomerSearchSheet> {
       _filteredCustomers = q.isEmpty
           ? widget.customers
           : widget.customers
-              .where((c) => c['name']!.toLowerCase().contains(q))
+              .where((c) =>
+                  c['name']!.toLowerCase().contains(q) ||
+                  c['phone']!.toLowerCase().contains(q))
               .toList();
     });
   }
@@ -533,59 +717,122 @@ class _CustomerSearchSheetState extends State<_CustomerSearchSheet> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return DraggableScrollableSheet(
-      initialChildSize: 0.5,
-      minChildSize: 0.3,
-      maxChildSize: 0.9,
-      builder: (ctx, scrollController) {
-        return Container(
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surface,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+    final mediaQuery = MediaQuery.of(context);
+    final keyboardHeight = mediaQuery.viewInsets.bottom;
+    final screenHeight = mediaQuery.size.height;
+
+    return Container(
+      height: screenHeight * 0.8, // Fixed height instead of draggable
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: Column(
+        children: [
+          // Handle bar
+          const SizedBox(height: 12),
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: Colors.grey[400],
+              borderRadius: BorderRadius.circular(2),
+            ),
           ),
-          child: Column(
-            children: [
-              const SizedBox(height: 12),
-              Container(
-                  width: 40,
-                  height: 4,
-                  decoration: BoxDecoration(
-                      color: Colors.grey[400],
-                      borderRadius: BorderRadius.circular(2))),
-              const SizedBox(height: 12),
-              Text('اختر عميلًا',
+          const SizedBox(height: 12),
+
+          // Title with close button
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'اختر عميلًا',
                   style: theme.textTheme.titleMedium
-                      ?.copyWith(fontWeight: FontWeight.bold)),
-              const SizedBox(height: 16),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: TextField(
-                  controller: _searchCtrl,
-                  decoration: const InputDecoration(
-                      prefixIcon: Icon(Icons.search),
-                      labelText: 'ابحث عن العميل',
-                      border: OutlineInputBorder()),
+                      ?.copyWith(fontWeight: FontWeight.bold),
                 ),
-              ),
-              const SizedBox(height: 8),
-              Expanded(
-                child: ListView.builder(
-                  controller: scrollController,
-                  itemCount: _filteredCustomers.length,
-                  itemBuilder: (context, i) {
-                    final cust = _filteredCustomers[i];
-                    return ListTile(
-                      title: Text(cust['name']!),
-                      subtitle: Text(cust['phone']!),
-                      onTap: () => Navigator.pop(context, cust),
-                    );
-                  },
+                IconButton(
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.close),
+                  tooltip: 'إغلاق',
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
-        );
-      },
+          const SizedBox(height: 16),
+
+          // Search field
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: TextField(
+              controller: _searchCtrl,
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.search),
+                labelText: 'ابحث عن العميل',
+                border: OutlineInputBorder(),
+              ),
+              autofocus: true, // Auto focus the search field
+            ),
+          ),
+          const SizedBox(height: 8),
+
+          // Customer list
+          Expanded(
+            child: _filteredCustomers.isEmpty
+                ? Center(
+                    child: Text(
+                      'لا توجد نتائج',
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    itemCount: _filteredCustomers.length,
+                    itemBuilder: (context, i) {
+                      final cust = _filteredCustomers[i];
+                      return Card(
+                        margin: const EdgeInsets.symmetric(
+                            vertical: 2, horizontal: 8),
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor:
+                                theme.colorScheme.primary.withOpacity(0.1),
+                            child: Icon(
+                              Icons.person,
+                              color: theme.colorScheme.primary,
+                            ),
+                          ),
+                          title: Text(
+                            cust['name']!,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          subtitle: Text(
+                            cust['phone']!,
+                            style: theme.textTheme.bodySmall,
+                          ),
+                          trailing: Chip(
+                            label: Text(
+                              (cust['type'] == 'distributor') ? 'موزع' : 'عادي',
+                            ),
+                            backgroundColor:
+                                theme.colorScheme.secondary.withAlpha(26),
+                          ),
+                          onTap: () => Navigator.pop(context, cust),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+
+          // Bottom padding to account for keyboard
+          SizedBox(height: keyboardHeight > 0 ? keyboardHeight * 0.1 : 16),
+        ],
+      ),
     );
   }
 

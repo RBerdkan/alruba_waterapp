@@ -2,6 +2,7 @@
 
 import 'package:alruba_waterapp/features/presentation/distrubutor/sale_form.dart';
 import 'package:alruba_waterapp/features/presentation/distrubutor/sales/widgets/sales_queue_page.dart';
+import 'package:alruba_waterapp/features/presentation/manager/manager_cashflow_page.dart';
 import 'package:alruba_waterapp/features/presentation/owner/admin_profiles_page.dart';
 import 'package:alruba_waterapp/features/presentation/owner/owner_unpaid_sale.dart';
 import 'package:flutter/material.dart';
@@ -10,11 +11,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:alruba_waterapp/features/presentation/logout_button.dart';
 import 'package:alruba_waterapp/features/presentation/manager/Gallon_transaction_status_page.dart';
 import 'package:alruba_waterapp/features/presentation/manager/manager_dashboard_page.dart';
+
 import 'package:alruba_waterapp/features/presentation/owner/expenses/expense_list_page.dart';
 import 'package:alruba_waterapp/features/presentation/owner/owner_dashboard_page.dart';
 import 'package:alruba_waterapp/features/presentation/owner/owner_management_page.dart';
 import 'package:alruba_waterapp/services/supabase_service.dart';
-
 
 /*=============================================================================
  *  الصفحة الرئيسية للمالك
@@ -39,22 +40,36 @@ class _OwnerHomePageState extends ConsumerState<OwnerHomePage> {
     _NavItem(icon: Icons.sell_outlined, label: 'الأرباح'),
   ];
 
-  final List<Widget> _pages = const [
-    OwnerManagementPage(),
-    ExpensesScreen(),
-    ManagerDashboardPage(),
-    GallonTransactionStatusPage(),
-    OwnerDashboardPage(),
+  final List<Widget> _pages = [
+    const OwnerManagementPage(),
+    const ExpensesScreen(),
+    const ManagerDashboardPage(),
+    const GallonTransactionStatusPage(),
+    const OwnerDashboardPage(),
   ];
 
   /* -------------------------------------------------------------------------
    * عناصر قائمة الجانبية (شاشات مستقلة تماماً)
    * -----------------------------------------------------------------------*/
   final List<_DrawerEntry> _drawerItems = const [
-    _DrawerEntry(icon: Icons.add_circle_outline_sharp, label: 'إجراء مبيعات', page: MakeSalePage()),
-    _DrawerEntry(icon: Icons.query_builder, label: 'قائمة الانتظار للمبيعات', page: SalesQueuePage()),
-    _DrawerEntry(icon: Icons.person, label: 'الملفات الشخصية', page: AdminProfilesPage()),
-    _DrawerEntry(icon: Icons.money_off, label: 'طلبات غير مدفوعة', page: OwnerUnpaidSalesPage()),
+    _DrawerEntry(
+        icon: Icons.add_circle_outline_sharp,
+        label: 'إجراء مبيعات',
+        page: MakeSalePage()),
+    _DrawerEntry(
+        icon: Icons.query_builder,
+        label: 'قائمة الانتظار للمبيعات',
+        page: SalesQueuePage()),
+    _DrawerEntry(
+        icon: Icons.person,
+        label: 'الملفات الشخصية',
+        page: AdminProfilesPage()),
+    _DrawerEntry(
+        icon: Icons.money_off,
+        label: 'طلبات غير مدفوعة',
+        page: OwnerUnpaidSalesPage()),
+    _DrawerEntry(
+        icon: Icons.money, label: 'التدفق النقدي', page: ManagerCashflowPage()),
 
     //_DrawerEntry(icon: Icons.dashboard, label: 'لوحة تحكم العمال', page: OwnerDashboardPage2()),
   ];
@@ -87,7 +102,9 @@ class _OwnerHomePageState extends ConsumerState<OwnerHomePage> {
   void _showErrorSnackbar(String message) =>
       WidgetsBinding.instance.addPostFrameCallback((_) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(message), backgroundColor: Theme.of(context).colorScheme.error),
+          SnackBar(
+              content: Text(message),
+              backgroundColor: Theme.of(context).colorScheme.error),
         );
       });
 
@@ -100,7 +117,8 @@ class _OwnerHomePageState extends ConsumerState<OwnerHomePage> {
     return Scaffold(
       /* ---------------- شريط التطبيق ---------------- */
       appBar: AppBar(
-        title: const Text('الصفحة الرئيسية للمالك', style: TextStyle(fontWeight: FontWeight.w600)),
+        title: const Text('الصفحة الرئيسية للمالك',
+            style: TextStyle(fontWeight: FontWeight.w600)),
         centerTitle: true,
         flexibleSpace: Container(
           decoration: BoxDecoration(
@@ -123,7 +141,8 @@ class _OwnerHomePageState extends ConsumerState<OwnerHomePage> {
               ),
               child: Align(
                 alignment: Alignment.bottomLeft,
-                child: Text('لوحة المالك', style: TextStyle(color: cs.onPrimary, fontSize: 20)),
+                child: Text('لوحة المالك',
+                    style: TextStyle(color: cs.onPrimary, fontSize: 20)),
               ),
             ),
             Expanded(
@@ -162,7 +181,8 @@ class _OwnerHomePageState extends ConsumerState<OwnerHomePage> {
             Container(
               color: Colors.black54,
               child: const Center(
-                child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Colors.white)),
+                child: CircularProgressIndicator(
+                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white)),
               ),
             ),
         ],
@@ -175,7 +195,7 @@ class _OwnerHomePageState extends ConsumerState<OwnerHomePage> {
         type: BottomNavigationBarType.fixed,
         backgroundColor: cs.surface,
         selectedItemColor: cs.primary,
-        unselectedItemColor: cs.onSurface.withOpacity(.6),
+        unselectedItemColor: cs.onSurface.withValues(alpha: 0.6),
         showUnselectedLabels: true,
         elevation: 8,
         items: [
@@ -200,5 +220,6 @@ class _DrawerEntry {
   final IconData icon;
   final String label;
   final Widget page;
-  const _DrawerEntry({required this.icon, required this.label, required this.page});
+  const _DrawerEntry(
+      {required this.icon, required this.label, required this.page});
 }

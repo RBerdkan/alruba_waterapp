@@ -12,7 +12,9 @@ import 'package:alruba_waterapp/features/presentation/distrubutor/distributor_sa
 import 'package:alruba_waterapp/features/presentation/distrubutor/sales/widgets/sales_queue_page.dart';
 
 import 'package:alruba_waterapp/providers/distributor_sales_provider.dart'
-    show DistributorSale, distributorSalesProvider;
+    show DistributorSale, distributorSalesProvider, distributorPaymentsProvider;
+import 'package:alruba_waterapp/providers/gallon_transactionprovider.dart'
+    show gallonTransactionsProvider;
 
 const _primaryGradient = LinearGradient(
   colors: [Color(0xFF2196F3), Color(0xFF64B5F6)],
@@ -35,13 +37,12 @@ class _DistributorHomePageState extends ConsumerState<DistributorHomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-       
         flexibleSpace: Container(
           decoration: const BoxDecoration(gradient: _primaryGradient),
         ),
         actions: [
           const LogoutButton(fullWidth: false),
-          const SizedBox(width:100),
+          const SizedBox(width: 100),
           IconButton(
             icon: const Icon(Icons.money_off, color: Colors.white),
             tooltip: 'Unpaid customers',
@@ -51,7 +52,7 @@ class _DistributorHomePageState extends ConsumerState<DistributorHomePage> {
               ));
             },
           ),
-          const SizedBox(width:40),
+          const SizedBox(width: 40),
           IconButton(
             icon: const Icon(Icons.local_drink_outlined, color: Colors.white),
             tooltip: 'Gallons transaction',
@@ -65,11 +66,11 @@ class _DistributorHomePageState extends ConsumerState<DistributorHomePage> {
       ),
       body: IndexedStack(
         index: _currentIndex,
-        children: const [
-          _DashboardTab(),
-          DistributorSalesPage(),
-          SalesQueuePage(),
-          CustomerDetailsPage(),
+        children: [
+          const _DashboardTab(),
+          const DistributorSalesPage(),
+          const SalesQueuePage(),
+          const CustomerDetailsPage(),
         ],
       ),
       floatingActionButton: FloatingActionButton(
@@ -141,143 +142,277 @@ class _DashboardTab extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final salesAsync = ref.watch(distributorSalesProvider);
+    final paymentsAsync = ref.watch(distributorPaymentsProvider);
+    final gallonsAsync = ref.watch(gallonTransactionsProvider);
     final lbp = NumberFormat.currency(
         locale: 'en_US', symbol: 'LBP ', decimalDigits: 0);
 
     return salesAsync.when(
-      loading: () => Center(
-        child: CircularProgressIndicator(color: Colors.blue.shade800),
-      ),
+      loading: () =>
+          Center(child: CircularProgressIndicator(color: Colors.blue.shade800)),
       error: (e, _) => Center(
-        child: Text('Error: $e', style: TextStyle(color: Colors.red.shade800)),
-      ),
+          child:
+              Text('Error: $e', style: TextStyle(color: Colors.red.shade800))),
       data: (allSales) {
-        final now = DateTime.now();
-        final createdToday = allSales.where((s) {
-          final d = s.date.toLocal();
-          return d.year == now.year && d.month == now.month && d.day == now.day;
-        }).toList();
-        final collectedToday = allSales.where((s) {
-          final p = s.paymentDate?.toLocal();
-          if (p == null) return false;
-          return p.year == now.year && p.month == now.month && p.day == now.day;
-        }).toList();
-        final depositsToday =
-            createdToday.where((s) => s.paymentStatus == 'deposit').toList();
-        final outstanding =
-            allSales.where((s) => s.paymentStatus == 'unpaid').toList();
-        final revenueToday = createdToday
-            .where((s) => s.paymentStatus == 'paid')
-            .fold<double>(0, (sum, s) => sum + s.totalAmount);
-        final depositTaken =
-            depositsToday.fold<double>(0, (sum, s) => sum + s.totalAmount);
-        final cashInToday =
-            collectedToday.fold<double>(0, (sum, s) => sum + s.totalAmount);
-        final outstandingTotal =
-            outstanding.fold<double>(0, (sum, s) => sum + s.totalAmount);
-        final itemsSoldMap = <String, int>{};
-        for (final s in createdToday) {
-          itemsSoldMap[s.productName] =
-              (itemsSoldMap[s.productName] ?? 0) + s.quantity;
-        }
-        final oweMap = <String, double>{};
-        for (final s in outstanding) {
-          oweMap[s.customerName] =
-              (oweMap[s.customerName] ?? 0) + s.totalAmount;
-        }
+        return paymentsAsync.when(
+          loading: () => Center(
+              child: CircularProgressIndicator(color: Colors.blue.shade800)),
+          error: (e, _) => Center(
+              child: Text('Error loading payments: $e',
+                  style: TextStyle(color: Colors.red.shade800))),
+          data: (allPayments) {
+            return gallonsAsync.when(
+              loading: () => Center(
+                  child:
+                      CircularProgressIndicator(color: Colors.blue.shade800)),
+              error: (e, _) => Center(
+                  child: Text('Error loading gallons: $e',
+                      style: TextStyle(color: Colors.red.shade800))),
+              data: (allGallons) {
+                final now = DateTime.now();
+                final today = DateTime(now.year, now.month, now.day);
 
-        return SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _SummaryCard(
-                title: "طلبات اليوم",
-                children: [
-                  'إجمالي الطلبات: ${createdToday.length}',
-                  'المدفوع مقدماً: ${lbp.format(revenueToday)}',
-                  'الودائع: ${lbp.format(depositTaken)}',
-                ],
-              ),
-              const SizedBox(height: 16),
-              _SummaryCard(
-                title: "العناصر المباعة اليوم",
-                children: itemsSoldMap.entries.map((e) {
-                  final product = e.key;
-                  final total = e.value;
-                  final paidCount = createdToday
-                      .where((s) =>
-                          s.productName == product && s.paymentStatus == 'paid')
-                      .fold<int>(0, (sum, s) => sum + s.quantity);
-                  final depositCount = createdToday
-                      .where((s) =>
-                          s.productName == product &&
-                          s.paymentStatus == 'deposit')
-                      .fold<int>(0, (sum, s) => sum + s.quantity);
-                  final unpaidCount = createdToday
-                      .where((s) =>
-                          s.productName == product &&
-                          s.paymentStatus == 'unpaid')
-                      .fold<int>(0, (sum, s) => sum + s.quantity);
+                // --- TODAY'S SALES (NORMAL SALES ONLY) ---
+                final todayNormalSales = allSales.where((s) {
+                  final d = s.date.toLocal();
+                  return d.year == now.year &&
+                      d.month == now.month &&
+                      d.day == now.day &&
+                      s.saleType?.toLowerCase() == 'normal';
+                }).toList();
 
-                  return '• $product: الإجمالي ${total}\u200E '
-                      '(مدفوع: ${paidCount}\u200E, وديعة: ${depositCount}\u200E, غير مدفوع: ${unpaidCount}\u200E)';
-                }).toList(),
-              ),
-              const SizedBox(height: 16),
-              _SummaryCard(
-                title: "التدفق النقدي اليوم",
-                children: [
-                  'إجمالي المبلغ المحصل: ${lbp.format(cashInToday)}',
-                  ' • من الطلبات الجديدة: ${lbp.format(revenueToday)}',
-                  ' • من الطلبات القديمة: ${lbp.format(cashInToday - revenueToday)}',
-                ],
-              ),
-              const SizedBox(height: 16),
-              _SummaryCard(
-                title: 'المبالغ المستحقة ',
-                children: ['الإجمالي المستحق: ${lbp.format(outstandingTotal)}'],
-              ),
-              const SizedBox(height: 24),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Text('العملاء غير المسددين',
-                    style: TextStyle(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.grey.shade800,
-                    )),
-              ),
-              const SizedBox(height: 8),
-              if (oweMap.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Text('	لا توجد مدفوعات مستحقة!',
-                      style: TextStyle(
-                        fontSize: 16,
-                        color: Colors.grey.shade600,
-                      )),
-                )
-              else
-                ...oweMap.entries.map((e) => _UnpaidCustomerCard(
-                      entry: e,
-                      allSales: allSales,
-                    )),
-            ],
-          ),
+                // Calculate unpaid sales total amount
+                final unpaidSalesTotal = todayNormalSales
+                    .where((s) => s.paymentStatus?.toLowerCase() == 'unpaid')
+                    .fold<double>(0, (sum, s) => sum + s.totalAmount);
+
+                // Group normal sales by product
+                final Map<String, Map<String, int>> normalSalesByProduct = {};
+                for (final sale in todayNormalSales) {
+                  final product = sale.productName ?? 'غير محدد';
+                  final status = sale.amountPaid >= sale.totalAmount &&
+                          sale.totalAmount > 0
+                      ? 'paid'
+                      : sale.amountPaid > 0 &&
+                              sale.amountPaid < sale.totalAmount
+                          ? 'partial'
+                          : 'unpaid';
+
+                  normalSalesByProduct.putIfAbsent(product,
+                      () => {'paid': 0, 'unpaid': 0, 'partial': 0, 'total': 0});
+                  final productMap = normalSalesByProduct[product]!;
+                  productMap[status] =
+                      (productMap[status] ?? 0) + sale.quantity;
+                  productMap['total'] =
+                      (productMap['total'] ?? 0) + sale.quantity;
+                }
+
+                // --- TODAY'S GALLON TRANSACTIONS (DETAILED) ---
+                final todayGallonTransactions = allGallons.where((g) {
+                  final d = g.createdAt.toLocal();
+                  return d.year == now.year &&
+                      d.month == now.month &&
+                      d.day == now.day;
+                }).toList();
+
+                // Create detailed gallon transaction list
+                final List<String> gallonTransactionDetails = [];
+                final Map<String, int> gallonSummary = {
+                  'deposits': 0,
+                  'purchases': 0,
+                  'returns': 0,
+                };
+
+                for (final gallon in todayGallonTransactions) {
+                  final customerName = gallon.customerName ?? 'مجهول';
+                  final productName = gallon.productName ?? 'جالون ماء';
+                  final quantity = gallon.quantity;
+                  final type = gallon.transactionType ?? 'unknown';
+
+                  // Update summary counts
+                  switch (type) {
+                    case 'deposit':
+                      gallonSummary['deposits'] =
+                          (gallonSummary['deposits'] ?? 0) + quantity;
+                      gallonTransactionDetails
+                          .add('$customerName: أودع $quantity $productName');
+                      break;
+                    case 'purchase':
+                      gallonSummary['purchases'] =
+                          (gallonSummary['purchases'] ?? 0) + quantity;
+                      gallonTransactionDetails
+                          .add('$customerName: اشترى $quantity $productName');
+                      break;
+                    case 'return':
+                      gallonSummary['returns'] =
+                          (gallonSummary['returns'] ?? 0) + quantity;
+                      gallonTransactionDetails
+                          .add('$customerName: أرجع $quantity $productName');
+                      break;
+                    case 'paid':
+                      gallonTransactionDetails.add(
+                          '$customerName: دفع مقابل $quantity $productName');
+                      break;
+                    default:
+                      gallonTransactionDetails
+                          .add('$customerName: $type $quantity $productName');
+                  }
+                }
+
+                // --- TODAY'S PAYMENTS ---
+                final todayPayments = allPayments.where((p) {
+                  final paymentDateStr = p['payment_date'] as String?;
+                  if (paymentDateStr == null) return false;
+                  try {
+                    final paymentDate = DateTime.parse(paymentDateStr);
+                    return paymentDate.isAfter(today) &&
+                        paymentDate
+                            .isBefore(today.add(const Duration(days: 1)));
+                  } catch (e) {
+                    return false;
+                  }
+                }).toList();
+                final totalCashInflow = todayPayments.fold<double>(0,
+                    (sum, p) => sum + ((p['amount'] as num?)?.toDouble() ?? 0));
+
+                // Payment type breakdown
+                final partialPayments = todayPayments.where((p) {
+                  final note = (p['note'] as String? ?? '').toLowerCase();
+                  final sale = p['sale'] as Map<String, dynamic>?;
+                  final status = sale?['payment_status']?.toLowerCase() ?? '';
+                  return status == 'partial' ||
+                      note.contains('جزئية') ||
+                      note.contains('partial') ||
+                      note.contains('دفعة من صفحة');
+                }).toList();
+
+                final depositPayments = todayPayments.where((p) {
+                  final note = p['note'] as String? ?? '';
+                  return note.contains('وديعة');
+                }).toList();
+
+                final partialAmount = partialPayments.fold<double>(0,
+                    (sum, p) => sum + ((p['amount'] as num?)?.toDouble() ?? 0));
+                final depositAmount = depositPayments.fold<double>(0,
+                    (sum, p) => sum + ((p['amount'] as num?)?.toDouble() ?? 0));
+                final paidSalesTotal =
+                    totalCashInflow - partialAmount - depositAmount;
+
+                return RefreshIndicator(
+                  onRefresh: () async {
+                    ref.invalidate(distributorSalesProvider);
+                    ref.invalidate(distributorPaymentsProvider);
+                    ref.invalidate(gallonTransactionsProvider);
+                  },
+                  child: Container(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          Colors.blue.shade50.withOpacity(0.3),
+                          Colors.grey.shade50,
+                          Colors.white,
+                        ],
+                        stops: const [0.0, 0.5, 1.0],
+                      ),
+                    ),
+                    child: SingleChildScrollView(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // --- CASHFLOW CARD ---
+                          _EqualSizeCard(
+                            title: "💰 التدفق النقدي اليوم",
+                            children: [
+                              'إجمالي النقد المحصل: ${lbp.format(totalCashInflow)}',
+                              'من مبيعات مدفوعة: ${lbp.format(paidSalesTotal)}',
+                              'من دفعات ودائع: ${lbp.format(depositAmount)}',
+                              'من دفعات جزئية: ${lbp.format(partialAmount)}',
+                              'إجمالي المبيعات غير المدفوعة: ${lbp.format(unpaidSalesTotal)}',
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+
+                          // --- NORMAL SALES PERFORMANCE ---
+                          if (normalSalesByProduct.isNotEmpty)
+                            _EqualSizeCard(
+                              title: "📦 أداء المبيعات العادية",
+                              children: [
+                                ...normalSalesByProduct.entries.map((entry) {
+                                  final product = entry.key;
+                                  final counts = entry.value;
+                                  final paid = counts['paid'] ?? 0;
+                                  final unpaid = counts['unpaid'] ?? 0;
+                                  final partial = counts['partial'] ?? 0;
+                                  final total = counts['total'] ?? 0;
+
+                                  return '${product}:\n   • مدفوع: $paid\n   • غير مدفوع: $unpaid\n   • جزئي: $partial\n   • المجموع: $total';
+                                }),
+                              ],
+                              isProductPerformance: true,
+                            ),
+                          if (normalSalesByProduct.isNotEmpty)
+                            const SizedBox(height: 16),
+
+                          // --- DETAILED GALLON TRANSACTIONS ---
+                          if (gallonTransactionDetails.isNotEmpty)
+                            _EqualSizeCard(
+                              title: "🏺 تفاصيل معاملات الجالونات",
+                              children: gallonTransactionDetails,
+                            ),
+                          if (gallonTransactionDetails.isNotEmpty)
+                            const SizedBox(height: 16),
+
+                          // --- TODAY'S PAYMENTS LIST ---
+                          _EqualSizeCard(
+                            title: "📝 دفعات اليوم",
+                            children: [
+                              ...todayPayments.map((p) {
+                                final sale = p['sale'] as Map<String, dynamic>?;
+                                final customer = sale != null
+                                    ? (sale['customer']
+                                            as Map<String, dynamic>? ??
+                                        {})
+                                    : {};
+                                final customerName =
+                                    customer['name'] as String? ?? 'مجهول';
+                                final amount =
+                                    (p['amount'] as num?)?.toDouble() ?? 0;
+                                final note = p['note'] as String? ?? '';
+                                String type = 'مدفوعة';
+                                if (note.contains('وديعة')) type = 'وديعة';
+                                if (note.contains('جزئية')) type = 'جزئية';
+                                return '$customerName: ${lbp.format(amount)} ($type)';
+                              }),
+                              if (todayPayments.isEmpty) 'لا يوجد دفعات اليوم',
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              },
+            );
+          },
         );
       },
     );
   }
 }
 
-class _SummaryCard extends StatelessWidget {
+class _EqualSizeCard extends StatelessWidget {
   final String title;
   final List<String> children;
+  final bool isProductPerformance;
 
-  const _SummaryCard({
+  const _EqualSizeCard({
     required this.title,
     required this.children,
+    this.isProductPerformance = false,
   });
 
   @override
@@ -285,24 +420,32 @@ class _SummaryCard extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
+        color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        gradient: const LinearGradient(
-          colors: [Colors.white, Color(0xFFF8F9FF)],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
+        border: Border.all(color: Colors.grey.shade200, width: 1),
         boxShadow: [
           BoxShadow(
-            color: Colors.blue.shade100,
-            blurRadius: 8,
+            color: Colors.grey.shade200.withOpacity(0.3),
+            blurRadius: 12,
             offset: const Offset(0, 4),
-          )
+            spreadRadius: 0,
+          ),
+          BoxShadow(
+            color: Colors.white,
+            blurRadius: 1,
+            offset: const Offset(0, 1),
+            spreadRadius: 0,
+          ),
         ],
       ),
-      child: Padding(
+      child: Container(
+        constraints: BoxConstraints(
+          minHeight: isProductPerformance ? 250 : 200,
+        ),
         padding: const EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
             Row(
               children: [
@@ -310,121 +453,93 @@ class _SummaryCard extends StatelessWidget {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   decoration: BoxDecoration(
-                    color: Colors.blue.shade50,
+                    color: isProductPerformance
+                        ? Colors.blue.shade50
+                        : Colors.grey.shade50,
                     borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: isProductPerformance
+                          ? Colors.blue.shade200
+                          : Colors.grey.shade200,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color:
+                            (isProductPerformance ? Colors.blue : Colors.grey)
+                                .shade200
+                                .withOpacity(0.2),
+                        blurRadius: 4,
+                        offset: const Offset(0, 1),
+                      ),
+                    ],
                   ),
-                  child: Text(title,
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.blue.shade800,
-                        letterSpacing: 0.3,
-                      )),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (isProductPerformance)
+                        Icon(
+                          Icons.analytics_outlined,
+                          size: 16,
+                          color: Colors.blue.shade700,
+                        ),
+                      if (isProductPerformance) const SizedBox(width: 6),
+                      Text(
+                        title,
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: isProductPerformance
+                              ? Colors.blue.shade700
+                              : Colors.grey.shade700,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ],
             ),
             const SizedBox(height: 16),
-            ...children.map((line) => Padding(
-                  padding: const EdgeInsets.only(bottom: 8),
-                  child: Row(
-                    children: [
-                      const SizedBox(width: 8),
-                      Icon(Icons.circle, size: 8, color: Colors.blue.shade300),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(line,
-                            style: TextStyle(
-                              fontSize: 15,
-                              color: Colors.grey.shade800,
-                              height: 1.4,
-                            )),
-                      ),
-                    ],
-                  ),
-                )),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _UnpaidCustomerCard extends StatelessWidget {
-  final MapEntry<String, double> entry;
-  final List<DistributorSale> allSales;
-
-  const _UnpaidCustomerCard({
-    required this.entry,
-    required this.allSales,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final lbp = NumberFormat.currency(
-        locale: 'en_US', symbol: 'LBP ', decimalDigits: 0);
-
-    return Container(
-      margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(14),
-        color: Colors.white,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.blue.shade100,
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          )
-        ],
-      ),
-      child: ListTile(
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-        leading: Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: Colors.blue.shade50,
-            shape: BoxShape.circle,
-          ),
-          child:
-              Icon(Icons.person_outline, size: 24, color: Colors.blue.shade800),
-        ),
-        title: Text(entry.key,
-            style: TextStyle(
-              fontSize: 17,
-              fontWeight: FontWeight.w600,
-              color: Colors.grey.shade800,
-            )),
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 4),
-          child: Text('مدين بـ: ${lbp.format(entry.value)}',
-              style: TextStyle(
-                fontSize: 15,
-                color: Colors.grey.shade600,
-              )),
-        ),
-        trailing: ElevatedButton.icon(
-          icon: const Icon(Icons.attach_money, size: 18),
-          label: const Text('تحصيل'),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.blue.shade800,
-            foregroundColor: Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(10),
+            Flexible(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: children
+                    .map((line) => Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Container(
+                                width: 4,
+                                height: 4,
+                                margin:
+                                    const EdgeInsets.only(top: 8, right: 12),
+                                decoration: BoxDecoration(
+                                  color: isProductPerformance
+                                      ? Colors.blue.shade400
+                                      : Colors.grey.shade400,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                              Expanded(
+                                child: Text(
+                                  line,
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: Colors.grey.shade700,
+                                    height: 1.5,
+                                    fontWeight: FontWeight.w400,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ))
+                    .toList(),
+              ),
             ),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            elevation: 2,
-          ),
-          onPressed: () {
-            final unpaidSales = allSales
-                .where((s) =>
-                    s.customerName == entry.key && s.paymentStatus == 'unpaid')
-                .toList();
-            Navigator.of(context).push(MaterialPageRoute(
-                builder: (_) => _UnpaidSalesPage(
-                      customerName: entry.key,
-                      sales: unpaidSales,
-                    )));
-          },
+          ],
         ),
       ),
     );
@@ -509,57 +624,167 @@ class _UnpaidSalesPage extends ConsumerWidget {
                         ),
                       ],
                     ),
-                    trailing: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green.shade600,
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 20, vertical: 12),
-                      ),
-                      onPressed: () async {
-                        final nav = Navigator.of(context);
-                        final msg = ScaffoldMessenger.of(context);
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green.shade600,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 20, vertical: 12),
+                          ),
+                          onPressed: () async {
+                            final nav = Navigator.of(context);
+                            final msg = ScaffoldMessenger.of(context);
 
-                        try {
-                          // Update the sale payment status
-                          final updatedSale = await Supabase.instance.client
-                              .from('sales')
-                              .update({'payment_status': 'paid'})
-                              .eq('id', s.saleId)
-                              .select();
+                            try {
+                              // Update the sale payment status to paid
+                              final updatedSale = await Supabase.instance.client
+                                  .from('sales')
+                                  .update({
+                                    'payment_status': 'paid',
+                                    'amount_paid': s.totalAmount
+                                  })
+                                  .eq('id', s.saleId)
+                                  .select();
 
-                          if (updatedSale.isEmpty) {
+                              if (updatedSale.isEmpty) {
+                                msg.showSnackBar(const SnackBar(
+                                    content: Text('No sale updated.')));
+                                return;
+                              }
+
+                              // Also update related gallon transactions
+                              await Supabase.instance.client
+                                  .from('gallon_transactions')
+                                  .update({
+                                'status': 'paid',
+                                'transaction_type': 'purchase'
+                              }).eq('sale_id', s.saleId);
+                            } on PostgrestException catch (err) {
+                              msg.showSnackBar(SnackBar(
+                                  content:
+                                      Text('Update failed: ${err.message}')));
+                              return;
+                            } catch (err) {
+                              msg.showSnackBar(
+                                  SnackBar(content: Text('Unexpected: $err')));
+                              return;
+                            }
+
+                            ref.invalidate(distributorSalesProvider);
                             msg.showSnackBar(const SnackBar(
-                                content: Text('No sale updated.')));
-                            return;
-                          }
+                                content: Text('Payment recorded!')));
+                            nav.pop();
+                          },
+                          child: const Text('تم الدفع'),
+                        ),
+                        const SizedBox(width: 8),
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.orange.shade600,
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 20, vertical: 12),
+                          ),
+                          onPressed: () async {
+                            final nav = Navigator.of(context);
+                            final msg = ScaffoldMessenger.of(context);
+                            final controller = TextEditingController();
+                            final result = await showDialog<double>(
+                              context: context,
+                              builder: (ctx) => AlertDialog(
+                                title: const Text('إدخال دفعة جزئية'),
+                                content: TextField(
+                                  controller: controller,
+                                  keyboardType: TextInputType.number,
+                                  decoration: const InputDecoration(
+                                    labelText: 'المبلغ المدفوع',
+                                  ),
+                                ),
+                                actions: [
+                                  TextButton(
+                                    onPressed: () => Navigator.pop(ctx),
+                                    child: const Text('إلغاء'),
+                                  ),
+                                  TextButton(
+                                    onPressed: () {
+                                      final val =
+                                          double.tryParse(controller.text);
+                                      if (val == null ||
+                                          val <= 0 ||
+                                          val >= s.totalAmount - s.amountPaid) {
+                                        msg.showSnackBar(const SnackBar(
+                                            content: Text(
+                                                'يرجى إدخال مبلغ صحيح أقل من المتبقي')));
+                                        return;
+                                      }
+                                      Navigator.pop(ctx, val);
+                                    },
+                                    child: const Text('تأكيد'),
+                                  ),
+                                ],
+                              ),
+                            );
+                            if (result == null) return;
+                            final partialAmount = result;
+                            try {
+                              // Insert payment record
+                              final now = DateTime.now();
+                              final paymentDate = DateTime(now.year, now.month,
+                                      now.day, now.hour, now.minute, now.second)
+                                  .toUtc()
+                                  .toIso8601String();
+                              debugPrint(
+                                  '[DistributorHome] Creating partial payment with date: $paymentDate');
+                              debugPrint(
+                                  '[DistributorHome] Current local time: $now');
+                              debugPrint(
+                                  '[DistributorHome] Payment date (local): ${DateTime(now.year, now.month, now.day, now.hour, now.minute, now.second)}');
 
-                          // Also update related gallon transactions
-                          await Supabase.instance.client
-                              .from('gallon_transactions')
-                              .update({
-                            'status': 'paid',
-                            'transaction_type': 'purchase'
-                          }).eq('sale_id', s.saleId);
-                        } on PostgrestException catch (err) {
-                          msg.showSnackBar(SnackBar(
-                              content: Text('Update failed: ${err.message}')));
-                          return;
-                        } catch (err) {
-                          msg.showSnackBar(
-                              SnackBar(content: Text('Unexpected: $err')));
-                          return;
-                        }
-
-                        ref.invalidate(distributorSalesProvider);
-                        msg.showSnackBar(
-                            const SnackBar(content: Text('Payment recorded!')));
-                        nav.pop();
-                      },
-                      child: const Text('تم الدفع'),
+                              await Supabase.instance.client
+                                  .from('payments')
+                                  .insert({
+                                'sale_id': s.saleId,
+                                'amount': partialAmount,
+                                'payment_date': paymentDate,
+                                'note': 'دفعة جزئية من صفحة التحصيل',
+                              });
+                              // Update sale's amountPaid and payment_status
+                              final newPaid = s.amountPaid + partialAmount;
+                              final newStatus =
+                                  newPaid >= s.totalAmount ? 'paid' : 'partial';
+                              await Supabase.instance.client
+                                  .from('sales')
+                                  .update({
+                                'amount_paid': newPaid,
+                                'payment_status': newStatus
+                              }).eq('id', s.saleId);
+                            } on PostgrestException catch (err) {
+                              msg.showSnackBar(SnackBar(
+                                  content:
+                                      Text('Update failed: ${err.message}')));
+                              return;
+                            } catch (err) {
+                              msg.showSnackBar(
+                                  SnackBar(content: Text('Unexpected: $err')));
+                              return;
+                            }
+                            ref.invalidate(distributorSalesProvider);
+                            msg.showSnackBar(const SnackBar(
+                                content: Text('تم تسجيل الدفعة الجزئية!')));
+                            nav.pop();
+                          },
+                          child: const Text('دفعة جزئية'),
+                        ),
+                      ],
                     ),
                   ),
                 );

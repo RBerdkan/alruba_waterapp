@@ -1,7 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:alruba_waterapp/services/supabase_service.dart';
 
-/// Model representing a sale (with joined customer/product details)
 class ManagerSale {
   final String saleId;
   final DateTime date;
@@ -16,6 +15,10 @@ class ManagerSale {
   final String? preciseLocation;
   final DateTime? paymentDate;
   final double amountPaid;
+  final String? sellerName;
+  final String? sellerRole;
+  final String? sellerId; // Add this if not already present
+  final String? saleType;
 
   ManagerSale({
     required this.saleId,
@@ -31,28 +34,32 @@ class ManagerSale {
     this.preciseLocation,
     this.paymentDate,
     required this.amountPaid,
+    this.sellerName,
+    this.sellerRole,
+    this.sellerId,
+    this.saleType,
   });
 
   factory ManagerSale.fromMap(Map<String, dynamic> m) {
     final customer = m['customer'] as Map<String, dynamic>? ?? {};
     final locData = customer['location'] as Map<String, dynamic>?;
-    final product = m['product'] as Map<String, dynamic>? ?? {};
-    final amountPaid = (m['amount_paid'] is String)
-        ? double.tryParse(m['amount_paid']) ?? 0.0
-        : (m['amount_paid'] as num?)?.toDouble() ?? 0.0;
 
-    // parse payment_date
+    final product = m['product'] as Map<String, dynamic>? ?? {};
+    final sellerProfile = m['seller_profile'] as Map<String, dynamic>? ?? {};
+
+    final rawPd = m['payment_date'];
     DateTime? pd;
-    final raw = m['payment_date'];
-    if (raw != null) {
-      pd = raw is String
-          ? DateTime.parse(raw).toLocal()
-          : (raw as DateTime).toLocal();
+    if (rawPd != null) {
+      if (rawPd is String) {
+        pd = DateTime.parse(rawPd).toLocal();
+      } else if (rawPd is DateTime) {
+        pd = rawPd.toLocal();
+      }
     }
 
-    final qty = (m['quantity'] as num?)?.toInt() ?? 0;
-    final price = (m['price_per_unit'] as num?)?.toDouble() ?? 0.0;
-    final tot = (m['total_amount'] as num?)?.toDouble() ?? (qty * price);
+    final sellerFirst = sellerProfile['first_name'] as String? ?? '';
+    final sellerLast = sellerProfile['last_name'] as String? ?? '';
+    final sellerFullName = '$sellerFirst $sellerLast'.trim();
 
     return ManagerSale(
       saleId: m['id'] as String,
@@ -60,44 +67,49 @@ class ManagerSale {
       paymentDate: pd,
       paymentStatus:
           (m['payment_status'] as String?)?.toLowerCase() ?? 'unknown',
-      quantity: qty,
-      pricePerUnit: price,
-      totalAmount: tot,
-      productName: product['name'] as String? ?? 'Unknown',
+      quantity: (m['quantity'] as num?)?.toInt() ?? 0,
+      pricePerUnit: (m['price_per_unit'] as num?)?.toDouble() ?? 0.0,
+      totalAmount: (m['total_amount'] as num?)?.toDouble() ??
+          ((m['quantity'] as num?)?.toInt() ?? 0) *
+              ((m['price_per_unit'] as num?)?.toDouble() ?? 0.0),
+      productName: product['name'] as String? ?? 'Unknown Item',
       customerName: customer['name'] as String? ?? 'Unknown',
       phone: customer['phone'] as String? ?? '',
       location: locData?['name'] as String? ?? 'Unknown',
       preciseLocation: customer['precise_location'] as String?,
-      amountPaid: amountPaid,
+      amountPaid: (m['amount_paid'] ?? 0).toDouble(),
+      sellerName: sellerFullName,
+      sellerRole: m['seller_profile']?['role'] as String?,
+      sellerId: m['sold_by'] as String?,
+      saleType: m['sale_type'] as String?,
     );
   }
 }
 
-/// Fetches *all* sales (no user filter)
 final managerSalesProvider =
     FutureProvider.autoDispose<List<ManagerSale>>((ref) async {
   final resp = await SupabaseService.client.from('sales').select(r'''
-    id,
-    created_at,
-    payment_date,
-    payment_status,
-    quantity,
-    price_per_unit,
-    total_amount,
-    sold_by,
-    amount_paid,
-    product:products!fk_sales_product(name),
-    customer:customers!fk_sales_customer(
-      name,
-      phone,
-      precise_location,
-      location:locations(name)
-    ),
-    seller_profile:profiles!sales_sold_by_fkey(role)
-  ''').filter('seller_profile.role', 'in', [
-    'manager',
-    'distributor'
-  ]).order('created_at', ascending: true);
+        id,
+        created_at,
+        payment_date,
+        payment_status,
+        quantity,
+        price_per_unit,
+        total_amount,
+        amount_paid,
+        sale_type,
+        sold_by,
+        product:products!fk_sales_product(name),
+        customer:customers!fk_sales_customer(
+          name,
+          phone,
+          precise_location,
+          location:locations(name)
+        ),
+seller_profile:profiles!sales_sold_by_fkey(role, first_name, last_name)
+      ''')
+      // Include all sales (owners, managers, distributors)
+      .order('created_at', ascending: true);
 
   return (resp as List)
       .cast<Map<String, dynamic>>()

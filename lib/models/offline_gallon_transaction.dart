@@ -34,9 +34,15 @@ class OfflineGallonTransaction extends HiveObject {
   @HiveField(9)
   String? saleId; // Will be populated after sync
 
+  @HiveField(10)
+  String? customerName; // Store customer name for display
+
+  @HiveField(11)
+  String? productName; // Store product name for display
+
   OfflineGallonTransaction({
-    required this.localTxId,        // Made required
-    required this.saleLocalId,      // Made required
+    required this.localTxId, // Made required
+    required this.saleLocalId, // Made required
     this.customerId,
     this.productId,
     required this.quantity,
@@ -45,5 +51,7 @@ class OfflineGallonTransaction extends HiveObject {
     required this.createdAt,
     required this.amount,
     this.saleId,
+    this.customerName,
+    this.productName,
   });
 }

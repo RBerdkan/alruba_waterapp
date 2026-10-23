@@ -3,12 +3,21 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
-final profilesProvider = FutureProvider.autoDispose<List<Map<String, dynamic>>>((ref) async {
+final profilesProvider =
+    FutureProvider.autoDispose<List<Map<String, dynamic>>>((ref) async {
   try {
     final response = await SupabaseService.client
         .from('profiles')
         .select('*')
         .order('created_at', ascending: false);
+
+    // Debug logging
+    print('Profiles loaded: ${response.length}');
+    for (final profile in response) {
+      print(
+          'Profile: ${profile['first_name']} ${profile['last_name']} - Role: ${profile['role']}');
+    }
+
     return response;
   } catch (e) {
     throw Exception('Failed to load profiles: ${e.toString()}');
@@ -49,6 +58,7 @@ class _AdminProfilesPageState extends ConsumerState<AdminProfilesPage> {
           .single();
       final role = response['role'] as String?;
       _isCurrentUserOwner = role == 'owner';
+      print('Current user role: $role, isOwner: $_isCurrentUserOwner');
     } finally {
       setState(() => _loadingPermissions = false);
     }
@@ -101,7 +111,8 @@ class _AdminProfilesPageState extends ConsumerState<AdminProfilesPage> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Text('Error: ${err.toString()}', style: const TextStyle(color: Colors.red)),
+                    Text('Error: ${err.toString()}',
+                        style: const TextStyle(color: Colors.red)),
                     const SizedBox(height: 10),
                     ElevatedButton(
                       onPressed: () => ref.invalidate(profilesProvider),
@@ -111,6 +122,14 @@ class _AdminProfilesPageState extends ConsumerState<AdminProfilesPage> {
                 ),
               ),
               data: (profiles) {
+                // Debug logging for roles
+                final roleCounts = <String, int>{};
+                for (final profile in profiles) {
+                  final role = profile['role'] ?? 'unknown';
+                  roleCounts[role] = (roleCounts[role] ?? 0) + 1;
+                }
+                print('Role distribution: $roleCounts');
+
                 if (_currentRoles.isEmpty) {
                   for (final profile in profiles) {
                     final userId = profile['user_id'] ?? '';
@@ -134,7 +153,8 @@ class _AdminProfilesPageState extends ConsumerState<AdminProfilesPage> {
                     return Card(
                       elevation: 3,
                       margin: const EdgeInsets.symmetric(vertical: 8),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16)),
                       child: Padding(
                         padding: const EdgeInsets.all(16),
                         child: Row(
@@ -144,8 +164,11 @@ class _AdminProfilesPageState extends ConsumerState<AdminProfilesPage> {
                               radius: 24,
                               backgroundColor: Colors.teal.shade100,
                               child: Text(
-                                (profile['first_name'] ?? 'U').substring(0, 1).toUpperCase(),
-                                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                                (profile['first_name'] ?? 'U')
+                                    .substring(0, 1)
+                                    .toUpperCase(),
+                                style: const TextStyle(
+                                    fontSize: 20, fontWeight: FontWeight.bold),
                               ),
                             ),
                             const SizedBox(width: 16),
@@ -172,7 +195,8 @@ class _AdminProfilesPageState extends ConsumerState<AdminProfilesPage> {
                               _RoleDropdown(
                                 currentRole: role,
                                 isUpdating: isUpdating,
-                                onRoleChanged: (newRole) => _updateRole(userId, newRole),
+                                onRoleChanged: (newRole) =>
+                                    _updateRole(userId, newRole),
                               )
                             else
                               Chip(
@@ -237,7 +261,10 @@ class _RoleDropdown extends StatelessWidget {
       ],
       underline: const SizedBox.shrink(),
       icon: isUpdating
-          ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+          ? const SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2))
           : const Icon(Icons.arrow_drop_down),
     );
   }

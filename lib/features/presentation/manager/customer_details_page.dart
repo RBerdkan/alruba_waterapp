@@ -1,10 +1,13 @@
 import 'package:alruba_waterapp/features/presentation/manager/edit_customer_page.dart';
+import 'package:alruba_waterapp/features/presentation/manager/Gallon_transaction_status_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:alruba_waterapp/providers/customers_provider.dart';
 import 'package:alruba_waterapp/providers/location_provider.dart';
 import 'package:alruba_waterapp/models/location.dart';
+import 'package:alruba_waterapp/services/supabase_service.dart';
+import 'package:intl/intl.dart';
 
 class CustomerDetailsPage extends ConsumerStatefulWidget {
   const CustomerDetailsPage({super.key});
@@ -184,7 +187,8 @@ class _CustomerDetailsPageState extends ConsumerState<CustomerDetailsPage> {
   List<Map<String, dynamic>> _filterCustomers(
       List<Map<String, dynamic>> customers) {
     return customers.where((customer) {
-      if (_locationFilter != null && customer['location_id'] != _locationFilter) {
+      if (_locationFilter != null &&
+          customer['location_id'] != _locationFilter) {
         return false;
       }
       if (_customerTypeFilter != null &&
@@ -205,7 +209,9 @@ class _CustomerDetailsPageState extends ConsumerState<CustomerDetailsPage> {
     final locations = ref.watch(locationsProvider).value ?? [];
 
     return RefreshIndicator(
-      onRefresh: () => ref.refresh(customersProvider.future),
+      onRefresh: () async {
+        ref.refresh(customersProvider.future);
+      },
       child: customersAsync.when(
         data: (customers) {
           final filtered = _filterCustomers(customers);
@@ -332,7 +338,7 @@ class _CustomerCard extends ConsumerWidget {
                         builder: (_) => EditCustomerPage(customer: customer),
                       ),
                     );
-                    
+
                     if (updated == true) {
                       ref.invalidate(customersProvider); // Force refresh
                     }

@@ -23,7 +23,7 @@ class PaymentSection extends StatelessWidget {
       items: paymentOptions
           .map((option) => DropdownMenuItem(
                 value: option,
-                child: Text(option), // Note: If options are in English, translate them too.
+                child: Text(option),
               ))
           .toList(),
       onChanged: onPaymentStatusChanged,

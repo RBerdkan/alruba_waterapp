@@ -6,7 +6,8 @@ import 'package:intl/intl.dart';
 import 'package:uuid/uuid.dart'; // Add this if you haven't already
 
 final supabase = Supabase.instance.client;
-final _lbp = NumberFormat.currency(locale: 'ar_LB', symbol: 'ل.ل ', decimalDigits: 0);
+final _lbp =
+    NumberFormat.currency(locale: 'ar_LB', symbol: 'ل.ل ', decimalDigits: 0);
 
 Future<void> payForDeposit({
   required BuildContext context,
@@ -22,6 +23,7 @@ Future<void> payForDeposit({
   final saleId = const Uuid().v4();
 
   try {
+    // Only create a deposit_paid sale, always marked as paid, with full amount_paid
     await supabase.from('sales').insert({
       'id': saleId,
       'customer_id': customerId,
@@ -32,10 +34,18 @@ Future<void> payForDeposit({
       'sale_type': 'deposit_paid',
       'created_at': now.toIso8601String(),
       'payment_date': now.toIso8601String(),
-      'note': 'Payment for deposit sale $linkedDepositSaleId',
+      'note': 'Payment for deposit transaction $linkedDepositSaleId',
       'linked_sale_id': linkedDepositSaleId,
       'location_id': locationId,
       'sold_by': Supabase.instance.client.auth.currentUser?.id,
+      'amount_paid': totalAmount,
+    });
+
+    await supabase.from('payments').insert({
+      'sale_id': saleId,
+      'amount': totalAmount,
+      'payment_date': now.toIso8601String(),
+      'note': 'دفع وديعة (دفع مباشر)',
     });
 
     await supabase.from('gallon_transactions').insert({
@@ -47,12 +57,15 @@ Future<void> payForDeposit({
       'status': 'paid',
       'created_at': now.toIso8601String(),
       'amount': totalAmount,
-      'sale_id': saleId,
+      'sale_id': saleId, // Link to the new sale, not the original transaction
+      'linked_deposit_id': linkedDepositSaleId, // Link to the original deposit
       'is_settled': false,
+      'seller_id': Supabase.instance.client.auth.currentUser?.id,
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('تم تسجيل الدفع بنجاح'), backgroundColor: Colors.green),
+      const SnackBar(
+          content: Text('تم تسجيل الدفع بنجاح'), backgroundColor: Colors.green),
     );
   } catch (e) {
     ScaffoldMessenger.of(context).showSnackBar(

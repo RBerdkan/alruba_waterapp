@@ -1,6 +1,8 @@
 import 'package:alruba_waterapp/models/offline_gallon_transaction.dart';
 import 'package:alruba_waterapp/providers/customers_provider.dart';
 import 'package:alruba_waterapp/providers/distributor_sales_provider.dart';
+import 'package:alruba_waterapp/providers/gallon_transactionprovider.dart';
+import 'package:alruba_waterapp/providers/manager_slaes_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -17,15 +19,22 @@ class SalesQueuePage extends ConsumerStatefulWidget {
 
 class _SalesQueuePageState extends ConsumerState<SalesQueuePage> {
   bool _isSyncing = false;
+  bool _boxesInitialized = false;
 
   // LBP currency formatter
   final _lbpFormat = NumberFormat.currency(
     locale: 'ar_LB',
     symbol: 'ل.ل',
-    name: '',             // Prevent LPB from being added
+    name: '', // Prevent LPB from being added
     decimalDigits: 0,
     customPattern: '#,##0 ¤', // Number then currency
   );
+
+  @override
+  void initState() {
+    super.initState();
+    _ensureBoxesOpen();
+  }
 
   Future<void> _syncSales() async {
     setState(() {
@@ -33,22 +42,39 @@ class _SalesQueuePageState extends ConsumerState<SalesQueuePage> {
     });
     try {
       final salesBox = Hive.box<OfflineSale>('offline_sales');
+      final gallonBox =
+          Hive.box<OfflineGallonTransaction>('offline_gallon_transactions');
+
       final List<OfflineSale> localSales = salesBox.values.toList();
+      final List<OfflineGallonTransaction> localGallons =
+          gallonBox.values.toList();
 
       await OfflineSyncService().syncOfflineData();
 
       ref.invalidate(customersProvider);
       ref.invalidate(distributorSalesProvider);
 
+      // Clear both boxes after successful sync
       await salesBox.clear();
+      await gallonBox.clear();
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('تمت المزامنة بنجاح!')),
+        SnackBar(
+          content: Text(
+              'تمت المزامنة بنجاح! ${localSales.length} مبيعات و ${localGallons.length} ودائع'),
+          backgroundColor: Colors.green,
+        ),
       );
+      ref.invalidate(distributorSalesProvider);
+      ref.invalidate(managerSalesProvider);
+      ref.invalidate(gallonTransactionsProvider);
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('فشلت المزامنة: $e')),
+        SnackBar(
+          content: Text('فشلت المزامنة: $e'),
+          backgroundColor: Colors.red,
+        ),
       );
     } finally {
       setState(() {
@@ -67,6 +93,22 @@ class _SalesQueuePageState extends ConsumerState<SalesQueuePage> {
 
     if (!mounted) return;
     setState(() {});
+  }
+
+  // Helper method to ensure both boxes are opened
+  Future<void> _ensureBoxesOpen() async {
+    try {
+      await Hive.openBox<OfflineSale>('offline_sales');
+      await Hive.openBox<OfflineGallonTransaction>(
+          'offline_gallon_transactions');
+      if (mounted) {
+        setState(() {
+          _boxesInitialized = true;
+        });
+      }
+    } catch (e) {
+      print('Error opening Hive boxes: $e');
+    }
   }
 
   void _showSaleDetails(OfflineSale sale) {
@@ -155,11 +197,140 @@ class _SalesQueuePageState extends ConsumerState<SalesQueuePage> {
     );
   }
 
+  void _showGallonTransactionDetails(OfflineGallonTransaction transaction) {
+    final formattedDate =
+        DateFormat('yyyy-MM-dd hh:mm a').format(transaction.createdAt);
+
+    String transactionType = '';
+    String description = '';
+    IconData icon = Icons.water_drop;
+    Color color = Colors.blue;
+
+    switch (transaction.transactionType) {
+      case 'deposit':
+        transactionType = 'وديعة (ثقة)';
+        description = 'تم إعطاء الجالونات للعميل على الثقة بدون دفع';
+        icon = Icons.account_balance_wallet;
+        color = Colors.purple;
+        break;
+      case 'purchase':
+        transactionType = 'شراء جالونات';
+        description = 'تم شراء الجالونات مع الدفع';
+        icon = Icons.shopping_cart;
+        color = Colors.green;
+        break;
+      case 'return':
+        transactionType = 'إرجاع جالونات';
+        description = 'تم إرجاع الجالونات الفارغة';
+        icon = Icons.swap_horiz;
+        color = Colors.orange;
+        break;
+      default:
+        transactionType = transaction.transactionType;
+        description = 'عملية جالون عادية';
+    }
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          title: Row(
+            children: [
+              Icon(icon, color: color, size: 24),
+              const SizedBox(width: 8),
+              Text(transactionType),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(description,
+                    style: const TextStyle(fontSize: 16, color: Colors.grey)),
+                const SizedBox(height: 16),
+                const Divider(thickness: 1.2),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    const Text('العميل: ',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                    Text(transaction.customerName ?? 'غير محدد'),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Text('المنتج: ',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                    Text(transaction.productName ?? 'غير محدد'),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Text('الكمية: ',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                    Text('${transaction.quantity} جالون'),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Text('المبلغ: ',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                    Text(transaction.amount > 0
+                        ? _lbpFormat.format(transaction.amount)
+                        : 'مجاني'),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Text('الحالة: ',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                    Text(transaction.status ?? 'غير محدد'),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Text('تاريخ الإنشاء: ',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                    Text(formattedDate),
+                  ],
+                ),
+                if ((transaction.saleLocalId ?? '').isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      const Text('معرف البيع: ',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
+                      Text((transaction.saleLocalId ?? '').substring(0, 8) +
+                          '...'),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('إغلاق'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("قائمة مبيعات اليوم"),
+        title: const Text("قائمة الانتظار"),
       ),
       body: Column(
         children: [
@@ -229,9 +400,26 @@ class _SalesQueuePageState extends ConsumerState<SalesQueuePage> {
             ),
           ),
           Expanded(
-            child: ValueListenableBuilder<Box<OfflineSale>>(
+            child: DefaultTabController(
+              length: 2,
+              child: Column(
+                children: [
+                  const TabBar(
+                    tabs: [
+                      Tab(text: 'المبيعات'),
+                      Tab(text: 'الودائع'),
+                    ],
+                  ),
+                  Expanded(
+                    child: TabBarView(
+                      children: [
+                        // Sales Tab
+                        !_boxesInitialized
+                            ? const Center(child: CircularProgressIndicator())
+                            : ValueListenableBuilder<Box<OfflineSale>>(
               valueListenable:
-                  Hive.box<OfflineSale>('offline_sales').listenable(),
+                                    Hive.box<OfflineSale>('offline_sales')
+                                        .listenable(),
               builder: (context, box, _) {
                 final unsyncedSales = box.values.toList();
                 if (unsyncedSales.isEmpty) {
@@ -246,26 +434,35 @@ class _SalesQueuePageState extends ConsumerState<SalesQueuePage> {
                   itemCount: unsyncedSales.length,
                   itemBuilder: (context, index) {
                     final sale = unsyncedSales[index];
-                    final customerLabel = sale.customerName ?? 'عميل غير معروف';
-                    final productLabel = sale.productName ?? 'لا يوجد منتج';
+                                      final customerLabel =
+                                          sale.customerName ?? 'عميل غير معروف';
+                                      final productLabel =
+                                          sale.productName ?? 'لا يوجد منتج';
                     return Card(
                       margin: const EdgeInsets.all(8),
                       elevation: 3,
                       shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12)),
+                                            borderRadius:
+                                                BorderRadius.circular(12)),
                       child: ListTile(
-                        contentPadding: const EdgeInsets.symmetric(
+                                          contentPadding:
+                                              const EdgeInsets.symmetric(
                             horizontal: 16, vertical: 10),
-                        leading: const Icon(Icons.pending_actions, size: 30),
+                                          leading: const Icon(
+                                              Icons.pending_actions,
+                                              size: 30),
                         title: Text(
                           customerLabel,
-                          style: const TextStyle(fontWeight: FontWeight.bold),
+                                            style: const TextStyle(
+                                                fontWeight: FontWeight.bold),
                         ),
-                        subtitle: Text('المنتج: $productLabel\n'
+                                          subtitle: Text(
+                                              'المنتج: $productLabel\n'
                             'الكمية: ${sale.quantity} | السعر: ${_lbpFormat.format(sale.pricePerUnit)}'),
                         trailing: Text(
                           _lbpFormat.format(sale.totalPrice),
-                          style: const TextStyle(fontWeight: FontWeight.bold),
+                                            style: const TextStyle(
+                                                fontWeight: FontWeight.bold),
                         ),
                         onTap: () => _showSaleDetails(sale),
                       ),
@@ -273,6 +470,102 @@ class _SalesQueuePageState extends ConsumerState<SalesQueuePage> {
                   },
                 );
               },
+                              ),
+                        // Gallon Transactions Tab
+                        !_boxesInitialized
+                            ? const Center(child: CircularProgressIndicator())
+                            : ValueListenableBuilder<
+                                Box<OfflineGallonTransaction>>(
+                                valueListenable:
+                                    Hive.box<OfflineGallonTransaction>(
+                                            'offline_gallon_transactions')
+                                        .listenable(),
+                                builder: (context, box, _) {
+                                  final unsyncedTransactions =
+                                      box.values.toList();
+                                  if (unsyncedTransactions.isEmpty) {
+                                    return const Center(
+                                      child: Text(
+                                        'لا توجد ودائع غير متزامنة!',
+                                        style: TextStyle(fontSize: 18),
+                                      ),
+                                    );
+                                  }
+                                  return ListView.builder(
+                                    itemCount: unsyncedTransactions.length,
+                                    itemBuilder: (context, index) {
+                                      final transaction =
+                                          unsyncedTransactions[index];
+                                      String transactionType = '';
+                                      IconData icon = Icons.water_drop;
+                                      Color color = Colors.blue;
+
+                                      switch (transaction.transactionType) {
+                                        case 'deposit':
+                                          transactionType = 'وديعة (ثقة)';
+                                          icon = Icons.account_balance_wallet;
+                                          color = Colors.purple;
+                                          break;
+                                        case 'purchase':
+                                          transactionType = 'شراء جالونات';
+                                          icon = Icons.shopping_cart;
+                                          color = Colors.green;
+                                          break;
+                                        case 'return':
+                                          transactionType = 'إرجاع جالونات';
+                                          icon = Icons.swap_horiz;
+                                          color = Colors.orange;
+                                          break;
+                                        default:
+                                          transactionType =
+                                              transaction.transactionType;
+                                      }
+
+                                      return Card(
+                                        margin: const EdgeInsets.all(8),
+                                        elevation: 3,
+                                        shape: RoundedRectangleBorder(
+                                            borderRadius:
+                                                BorderRadius.circular(12)),
+                                        child: ListTile(
+                                          contentPadding:
+                                              const EdgeInsets.symmetric(
+                                                  horizontal: 16, vertical: 10),
+                                          leading: Icon(icon,
+                                              size: 30, color: color),
+                                          title: Text(
+                                            transaction.customerName ??
+                                                transactionType,
+                                            style: const TextStyle(
+                                                fontWeight: FontWeight.bold),
+                                          ),
+                                          subtitle: Text(
+                                              'الكمية: ${transaction.quantity} جالون\n'
+                                              'النوع: ${transaction.transactionType}\n'
+                                              'التاريخ: ${DateFormat('MMM dd, HH:mm').format(transaction.createdAt)}'),
+                                          onTap: () =>
+                                              _showGallonTransactionDetails(
+                                                  transaction),
+                                          trailing: transaction.amount > 0
+                                              ? Text(
+                                                  _lbpFormat.format(
+                                                      transaction.amount),
+                                                  style: const TextStyle(
+                                                      fontWeight:
+                                                          FontWeight.bold),
+                                                )
+                                              : const Text('مجاني'),
+                                        ),
+                                      );
+                                    },
+                                  );
+                                },
+                              ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ],

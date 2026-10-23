@@ -30,6 +30,7 @@ void main() async {
   Hive.registerAdapter(CustomerAdapter());
   Hive.registerAdapter(OfflineSaleAdapter());
   await Hive.openBox<OfflineSale>('offline_sales');
+  await Hive.openBox<OfflineGallonTransaction>('offline_gallon_transactions');
 
   await SupabaseService.initialize(
     url: dotenv.env['SUPABASE_URL']!,
@@ -48,34 +49,33 @@ class MyApp extends ConsumerWidget {
     ref.watch(roleSyncProvider); // Initialize role syncing
 
     return MaterialApp.router(
-  title: 'Water Distribution',
-  debugShowCheckedModeBanner: false,
-  theme: ThemeData(
-    colorScheme: ColorScheme.fromSeed(
-      seedColor: AppColors.primary,
-      brightness: Brightness.light,
-    ),
-    useMaterial3: true,
-    textTheme: const TextTheme(
-      headlineMedium: AppTextStyles.headline,
-      bodyLarge: AppTextStyles.body,
-    ),
-  ),
-  locale: const Locale('ar'), // Arabic language
-  localizationsDelegates:const[
-    GlobalMaterialLocalizations.delegate,
-    GlobalWidgetsLocalizations.delegate,
-    GlobalCupertinoLocalizations.delegate,
-  ],
-  supportedLocales: const [
-    Locale('ar'),
-    Locale('en'),
-  ],
-  routerDelegate: router.routerDelegate,
-  routeInformationParser: router.routeInformationParser,
-  routeInformationProvider: router.routeInformationProvider,
-);
-
+      title: 'Water Distribution',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: AppColors.primary,
+          brightness: Brightness.light,
+        ),
+        useMaterial3: true,
+        textTheme: const TextTheme(
+          headlineMedium: AppTextStyles.headline,
+          bodyLarge: AppTextStyles.body,
+        ),
+      ),
+      locale: const Locale('ar'), // Arabic language
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const [
+        Locale('ar'),
+        Locale('en'),
+      ],
+      routerDelegate: router.routerDelegate,
+      routeInformationParser: router.routeInformationParser,
+      routeInformationProvider: router.routeInformationProvider,
+    );
   }
 }
 

@@ -215,6 +215,15 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
   }
 
   Future<void> _deleteExpense(Expense exp) async {
+    // Optimistically remove from UI
+    final prevExpenses = ref.read(expenseProvider).expenses;
+    final newExpenses = List<Expense>.from(prevExpenses)
+      ..removeWhere((e) => e.id == exp.id);
+    ref.read(expenseProvider.notifier).state = ref
+        .read(expenseProvider.notifier)
+        .state
+        .copyWith(expenses: newExpenses);
+    // Call backend delete
     await ref.read(expenseProvider.notifier).deleteExpense(exp.id);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -222,7 +231,9 @@ class _ExpensesScreenState extends ConsumerState<ExpensesScreen> {
           content: const Text('Expense deleted'),
           action: SnackBarAction(
             label: 'Undo',
-            onPressed: () => ref.read(expenseProvider.notifier).addExpense(exp),
+            onPressed: () async {
+              await ref.read(expenseProvider.notifier).addExpense(exp);
+            },
           ),
         ),
       );

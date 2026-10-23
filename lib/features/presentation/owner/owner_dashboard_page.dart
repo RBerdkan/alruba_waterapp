@@ -6,6 +6,8 @@ import 'package:intl/intl.dart' show DateFormat, NumberFormat;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:file_picker/file_picker.dart';
 
 /// لوحة تحكم المالك - تعرض الأداء المالي الشهري واليومي
 /// تمت ترجمة الواجهة بالكامل للغة العربية مع دعم التخطيط من اليمين لليسار
@@ -22,10 +24,12 @@ class _OwnerDashboardPageState extends State<OwnerDashboardPage> {
       NumberFormat.currency(locale: 'ar_LB', symbol: 'ل.ل ', decimalDigits: 0);
 
   /// حوامل البيانات الخام -----------------------------------------------------
-  List<Map<String, dynamic>> _dailySales = [];
+  List<Map<String, dynamic>> _allSales = [];
+  List<Map<String, dynamic>> _allPayments = [];
+  List<Map<String, dynamic>> _allGallons = [];
   List<Map<String, dynamic>> _expenses = [];
-  List<Map<String, dynamic>> _monthlySummary = [];
   bool _isLoading = true;
+  Map<String, dynamic> _monthlyData = {};
 
   // ──────────────────────────────────────────────────────────────────────────
   // دورة الحياة
@@ -42,12 +46,23 @@ class _OwnerDashboardPageState extends State<OwnerDashboardPage> {
   Future<void> _loadData() async {
     setState(() => _isLoading = true);
     try {
-      await Future.wait([
-        _fetchDailySales(),
+      final results = await Future.wait([
+        _fetchAllSales(),
+        _fetchAllPayments(),
+        _fetchAllGallons(),
         _fetchExpenses(),
       ]);
-      _buildMonthlySummary();
+      _allSales = results[0] as List<Map<String, dynamic>>;
+      print('[DEBUG] Sales fetched: \\${_allSales.length}');
+      _allPayments = results[1] as List<Map<String, dynamic>>;
+      print('[DEBUG] Payments fetched: \\${_allPayments.length}');
+      _allGallons = results[2] as List<Map<String, dynamic>>;
+      print('[DEBUG] Gallons fetched: \\${_allGallons.length}');
+      _expenses = results[3] as List<Map<String, dynamic>>;
+      print('[DEBUG] Expenses fetched: \\${_expenses.length}');
+      _aggregateMonthly();
     } catch (e) {
+      print('[DEBUG][ERROR] Data fetch error: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -60,134 +75,152 @@ class _OwnerDashboardPageState extends State<OwnerDashboardPage> {
     }
   }
 
-  Future<void> _fetchDailySales() async {
+  Future<List<Map<String, dynamic>>> _fetchAllSales() async {
     final raw = await _supabase.from('sales').select(r'''
-        created_at,
-        payment_date,
-        quantity,
-        price_per_unit,
-        total_amount,
-        payment_status,
-        customer:customers!sales_customer_id_fkey (name, phone),
-        product:products!sales_product_id_fkey (name, production_cost),
-        location:locations!sales_location_id_fkey (name),
-        sold_by,
+      id, created_at, payment_date, quantity, price_per_unit, total_amount, payment_status, sale_type,
+      customer:customers!sales_customer_id_fkey(name, phone),
+      product:products!sales_product_id_fkey(name, production_cost),
+      location:locations!sales_location_id_fkey(name),
+      sold_by,
+      seller:profiles!sold_by (first_name, last_name)
+    ''').order('payment_date', ascending: false);
+    return (raw as List).cast<Map<String, dynamic>>();
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchAllPayments() async {
+    final raw = await _supabase.from('payments').select(r'''
+      id, sale_id, amount, payment_date, note,
+      sale:sales(
+        id, payment_status, sale_type, customer:customers!sales_customer_id_fkey(name), 
         seller:profiles!sold_by (first_name, last_name)
-      ''').eq('payment_status', 'paid').order('payment_date', ascending: false);
+      )
+    ''').order('payment_date', ascending: false);
+    return (raw as List).cast<Map<String, dynamic>>();
+  }
 
-    final Map<String, Map<String, dynamic>> grouped = {};
-    for (final sale in raw as List<dynamic>) {
-      final dateStr = sale['payment_date'] as String?;
-      if (dateStr == null) continue;
-
-      final day = DateTime.parse(dateStr).toLocal();
-      final key = DateFormat('yyyy-MM-dd').format(day);
-
-      grouped.putIfAbsent(
-          key,
-          () => {
-                'date': key,
-                'revenue': 0.0,
-                'cogs': 0.0,
-                'products': <Map<String, dynamic>>[],
-                'rawSales': <Map<String, dynamic>>[],
-              });
-
-      final entry = grouped[key]!;
-      final qty = (sale['quantity'] as num?)?.toDouble() ?? 0.0;
-      final price = (sale['price_per_unit'] as num?)?.toDouble() ?? 0.0;
-      final prod = sale['product'] as Map<String, dynamic>? ?? {};
-      final cost = (prod['production_cost'] as num?)?.toDouble() ?? 0.0;
-      final name = (prod['name'] as String?) ?? 'منتج غير معروف';
-
-      entry['revenue'] = (entry['revenue'] as double) + qty * price;
-      entry['cogs'] = (entry['cogs'] as double) + qty * cost;
-      (entry['products'] as List).add({
-        'name': name,
-        'quantity': qty,
-        'total': qty * price,
-      });
-      (entry['rawSales'] as List).add(sale);
-    }
-
-    if (mounted) {
-      setState(() => _dailySales = grouped.values.toList().reversed.toList());
+  Future<List<Map<String, dynamic>>> _fetchAllGallons() async {
+    try {
+      final raw = await _supabase.from('gallon_transactions').select(r'''
+        id, sale_id, product_id, created_at, amount, transaction_type, status, quantity,
+        customer:customers!fk_gallon_customer(
+          name,
+          location_id,
+          location:locations(name)
+        ),
+        product:products!gallon_transactions_product_id_fkey(name, production_cost),
+        seller:profiles!gallon_transactions_seller_id_fkey(first_name, last_name)
+      ''').order('created_at', ascending: false);
+      print(
+          '[DEBUG] Gallons query (full join) returned: \\${(raw as List).length}');
+      return (raw as List).cast<Map<String, dynamic>>();
+    } catch (e) {
+      print('[DEBUG][WARNING] Gallons full join failed: $e');
+      // Fallback to simpler query
+      final raw = await _supabase.from('gallon_transactions').select(r'''
+        id, sale_id, created_at, amount, transaction_type, status, quantity,
+        customer:customers!fk_gallon_customer(name),
+        product:products!gallon_transactions_product_id_fkey(name, production_cost),
+        seller:profiles!gallon_transactions_seller_id_fkey(first_name, last_name)
+      ''').order('created_at', ascending: false);
+      print(
+          '[DEBUG] Gallons query (fallback) returned: \\${(raw as List).length}');
+      return (raw as List).cast<Map<String, dynamic>>();
     }
   }
 
-  Future<void> _fetchExpenses() async {
+  Future<List<Map<String, dynamic>>> _fetchExpenses() async {
     final raw = await _supabase
         .from('expenses')
-        .select(r'date, amount, description') // Added description
+        .select('date, amount, description')
         .order('date', ascending: false);
+    return (raw as List).cast<Map<String, dynamic>>();
+  }
 
-    if (mounted) {
-      setState(() {
-        _expenses = (raw as List<dynamic>)
-            .map((e) => {
-                  'date': e['date'] as String,
-                  'amount': (e['amount'] as num?)?.toDouble() ?? 0.0,
-                  'description': e['description'] as String? ?? 'بدون وصف',
-                })
-            .toList();
-      });
+  void _aggregateMonthly() {
+    // Group sales, payments, gallons, expenses by month and day
+    final Map<String, dynamic> monthly = {};
+    for (final sale in _allSales) {
+      final dateStr = sale['payment_date'] ?? sale['created_at'];
+      if (dateStr == null) continue;
+      final dt = DateTime.parse(dateStr).toLocal();
+      final monthKey = '${dt.year}-${dt.month.toString().padLeft(2, '0')}';
+      final dayKey = DateFormat('yyyy-MM-dd').format(dt);
+      monthly.putIfAbsent(
+          monthKey,
+          () => {
+                'sales': [],
+                'payments': [],
+                'gallons': [],
+                'expenses': [],
+                'days': {}
+              });
+      monthly[monthKey]['sales'].add(sale);
+      monthly[monthKey]['days'].putIfAbsent(dayKey,
+          () => {'sales': [], 'payments': [], 'gallons': [], 'expenses': []});
+      monthly[monthKey]['days'][dayKey]['sales'].add(sale);
     }
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // تجميع البيانات
-  // ──────────────────────────────────────────────────────────────────────────
-  void _buildMonthlySummary() {
-  final Map<String, Map<String, dynamic>> monthly = {};
-
-  for (final day in _dailySales) {
-    final dt = DateTime.parse(day['date'] as String);
-    final key = '${dt.year}-${dt.month.toString().padLeft(2, '0')}';
-
-    monthly.putIfAbsent(
-        key,
-        () => {
-              'month': key,
-              'revenue': 0.0,
-              'cogs': 0.0,
-              'expenses': 0.0, // Ensure this exists
-              'net_profit': 0.0,
-              'products': <String, Map<String, dynamic>>{},
-            });
-
-    final m = monthly[key]!;
-    m['revenue'] = (m['revenue'] as double) + (day['revenue'] as double);
-    m['cogs'] = (m['cogs'] as double) + (day['cogs'] as double);
-
-    for (final p in day['products'] as List<dynamic>) {
-      final name = p['name'] as String;
-      final prodMap = m['products'] as Map<String, Map<String, dynamic>>;
-      prodMap.putIfAbsent(name, () => {'quantity': 0.0, 'total': 0.0});
-      prodMap[name]!['quantity'] =
-          (prodMap[name]!['quantity'] as double) + (p['quantity'] as double);
-      prodMap[name]!['total'] =
-          (prodMap[name]!['total'] as double) + (p['total'] as double);
+    for (final payment in _allPayments) {
+      final dateStr = payment['payment_date'];
+      if (dateStr == null) continue;
+      final dt = DateTime.parse(dateStr).toLocal();
+      final monthKey = '${dt.year}-${dt.month.toString().padLeft(2, '0')}';
+      final dayKey = DateFormat('yyyy-MM-dd').format(dt);
+      monthly.putIfAbsent(
+          monthKey,
+          () => {
+                'sales': [],
+                'payments': [],
+                'gallons': [],
+                'expenses': [],
+                'days': {}
+              });
+      monthly[monthKey]['payments'].add(payment);
+      monthly[monthKey]['days'].putIfAbsent(dayKey,
+          () => {'sales': [], 'payments': [], 'gallons': [], 'expenses': []});
+      monthly[monthKey]['days'][dayKey]['payments'].add(payment);
     }
-  }
-
-  // Process expenses
-  for (final exp in _expenses) {
-    final dt = DateTime.parse(exp['date'] as String);
-    final key = '${dt.year}-${dt.month.toString().padLeft(2, '0')}';
-    if (monthly.containsKey(key)) {
-      monthly[key]!['expenses'] =
-          (monthly[key]!['expenses'] as double) + (exp['amount'] as double);
+    for (final gallon in _allGallons) {
+      final dateStr = gallon['created_at'];
+      if (dateStr == null) continue;
+      final dt = DateTime.parse(dateStr).toLocal();
+      final monthKey = '${dt.year}-${dt.month.toString().padLeft(2, '0')}';
+      final dayKey = DateFormat('yyyy-MM-dd').format(dt);
+      monthly.putIfAbsent(
+          monthKey,
+          () => {
+                'sales': [],
+                'payments': [],
+                'gallons': [],
+                'expenses': [],
+                'days': {}
+              });
+      monthly[monthKey]['gallons'].add(gallon);
+      monthly[monthKey]['days'].putIfAbsent(dayKey,
+          () => {'sales': [], 'payments': [], 'gallons': [], 'expenses': []});
+      monthly[monthKey]['days'][dayKey]['gallons'].add(gallon);
     }
+    for (final exp in _expenses) {
+      final dateStr = exp['date'];
+      if (dateStr == null) continue;
+      final dt = DateTime.parse(dateStr).toLocal();
+      final monthKey = '${dt.year}-${dt.month.toString().padLeft(2, '0')}';
+      final dayKey = DateFormat('yyyy-MM-dd').format(dt);
+      monthly.putIfAbsent(
+          monthKey,
+          () => {
+                'sales': [],
+                'payments': [],
+                'gallons': [],
+                'expenses': [],
+                'days': {}
+              });
+      monthly[monthKey]['expenses'].add(exp);
+      monthly[monthKey]['days'].putIfAbsent(dayKey,
+          () => {'sales': [], 'payments': [], 'gallons': [], 'expenses': []});
+      monthly[monthKey]['days'][dayKey]['expenses'].add(exp);
+    }
+    setState(() => _monthlyData = monthly);
   }
-
-  // Calculate net profit
-  for (final m in monthly.values) {
-    final gross = (m['revenue'] as double) - (m['cogs'] as double);
-    m['net_profit'] = gross - (m['expenses'] as double);
-  }
-
-  if (mounted) setState(() => _monthlySummary = monthly.values.toList());
-}
 
   // ──────────────────────────────────────────────────────────────────────────
   // واجهة المستخدم
@@ -195,649 +228,892 @@ class _OwnerDashboardPageState extends State<OwnerDashboardPage> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-
-    return Directionality(
-      textDirection: TextDirection.rtl,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('لوحة تحكم المالك'),
-          centerTitle: true,
-          actions: [
-            IconButton(
-              icon: const Icon(Icons.refresh),
-              onPressed: _loadData,
-              tooltip: 'تحديث البيانات',
-            ),
-            IconButton(
-              icon: const Icon(Icons.download),
-              tooltip: 'تصدير تقرير سنوي',
-              onPressed: _monthlySummary.isEmpty ? null : _exportYearlyExcel,
-            ),
-          ],
-        ),
-        body: _isLoading
-            ? const Center(child: CircularProgressIndicator())
-            : RefreshIndicator(
-                onRefresh: _loadData,
-                child: _monthlySummary.isEmpty
-                    ? ListView(
-                        children: const [
-                          SizedBox(height: 120),
-                          Center(child: Text('لا توجد بيانات للعرض')),
-                        ],
-                      )
-                    : ListView.builder(
-                        padding: const EdgeInsets.all(16),
-                        itemCount: _monthlySummary.length,
-                        itemBuilder: (context, index) => _buildMonthCard(
-                          _monthlySummary[index],
-                          cs,
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('لوحة تحكم المالك'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: _loadData,
+            tooltip: 'تحديث البيانات',
+          ),
+        ],
+      ),
+      body: _isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : _monthlyData.isEmpty
+              ? Center(child: Text('لا توجد بيانات للعرض'))
+              : ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    ..._monthlyData.entries.map((entry) {
+                      final monthKey = entry.key;
+                      final data = entry.value;
+                      final monthDt = DateTime.parse('$monthKey-01');
+                      final monthTitle =
+                          DateFormat('MMMM yyyy', 'ar').format(monthDt);
+                      // Aggregation for this month
+                      final products = <String, Map<String, dynamic>>{};
+                      double totalCollected = 0;
+                      double productionCost = 0;
+                      double expenses = 0;
+                      double profit = 0;
+                      final gallonSummary = <String, int>{
+                        'deposit': 0,
+                        'purchase': 0,
+                        'return': 0
+                      };
+                      for (final sale in data['sales']) {
+                        final product = sale['product']?['name'] ?? 'غير معروف';
+                        final qty =
+                            (sale['quantity'] as num?)?.toDouble() ?? 0.0;
+                        final price =
+                            (sale['price_per_unit'] as num?)?.toDouble() ?? 0.0;
+                        final cost =
+                            (sale['product']?['production_cost'] as num?)
+                                    ?.toDouble() ??
+                                0.0;
+                        products.putIfAbsent(
+                            product, () => {'quantity': 0.0, 'total': 0.0});
+                        products[product]!['quantity'] += qty;
+                        products[product]!['total'] += qty * price;
+                        productionCost += qty * cost;
+                      }
+                      for (final p in data['payments']) {
+                        totalCollected +=
+                            (p['amount'] as num?)?.toDouble() ?? 0.0;
+                      }
+                      for (final g in data['gallons']) {
+                        final type = g['transaction_type'] ?? 'unknown';
+                        final qty = (g['quantity'] as num?)?.toInt() ?? 0;
+                        if (gallonSummary.containsKey(type))
+                          gallonSummary[type] =
+                              (gallonSummary[type] ?? 0) + qty;
+                      }
+                      for (final e in data['expenses']) {
+                        expenses += (e['amount'] as num?)?.toDouble() ?? 0.0;
+                      }
+                      profit = totalCollected - productionCost - expenses;
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 16),
+                        child: ExpansionTile(
+                          title: Text(monthTitle,
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.bold)),
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 8),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text('المنتجات المباعة:',
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.bold)),
+                                  ...products.entries.map((e) => Text(
+                                      '${e.key}: ${e.value['quantity']} (${_currency.format(e.value['total'])})')),
+                                  const SizedBox(height: 8),
+                                  Text('الجالونات:',
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.bold)),
+                                  Text('إيداع: ${gallonSummary['deposit']}'),
+                                  Text('شراء: ${gallonSummary['purchase']}'),
+                                  Text('إرجاع: ${gallonSummary['return']}'),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                      'إجمالي المبلغ المحصل: ${_currency.format(totalCollected)}'),
+                                  Text(
+                                      'تكلفة الإنتاج: ${_currency.format(productionCost)}'),
+                                  Text(
+                                      'المصروفات: ${_currency.format(expenses)}'),
+                                  Text('الربح: ${_currency.format(profit)}'),
+                                  const SizedBox(height: 8),
+                                  ElevatedButton.icon(
+                                    icon: const Icon(Icons.download),
+                                    label: const Text('تصدير الشهر'),
+                                    onPressed: () => _exportPeriodExcel(
+                                        'month', data, 'month_$monthKey'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            // Daily breakdown
+                            ...data['days'].entries.map<Widget>((dayEntry) {
+                              final dayKey = dayEntry.key;
+                              final dayData = dayEntry.value;
+                              final dayDt = DateTime.parse(dayKey);
+                              final dayTitle =
+                                  DateFormat('EEE, MMM d', 'ar').format(dayDt);
+                              // Aggregation for this day
+                              final dayProducts =
+                                  <String, Map<String, dynamic>>{};
+                              double dayCollected = 0;
+                              double dayProductionCost = 0;
+                              double dayExpenses = 0;
+                              double dayProfit = 0;
+                              final dayGallonSummary = <String, int>{
+                                'deposit': 0,
+                                'purchase': 0,
+                                'return': 0
+                              };
+                              for (final sale in dayData['sales']) {
+                                final product =
+                                    sale['product']?['name'] ?? 'غير معروف';
+                                final qty =
+                                    (sale['quantity'] as num?)?.toDouble() ??
+                                        0.0;
+                                final price = (sale['price_per_unit'] as num?)
+                                        ?.toDouble() ??
+                                    0.0;
+                                final cost = (sale['product']
+                                            ?['production_cost'] as num?)
+                                        ?.toDouble() ??
+                                    0.0;
+                                dayProducts.putIfAbsent(product,
+                                    () => {'quantity': 0.0, 'total': 0.0});
+                                dayProducts[product]!['quantity'] += qty;
+                                dayProducts[product]!['total'] += qty * price;
+                                dayProductionCost += qty * cost;
+                              }
+                              for (final p in dayData['payments']) {
+                                dayCollected +=
+                                    (p['amount'] as num?)?.toDouble() ?? 0.0;
+                              }
+                              for (final g in dayData['gallons']) {
+                                final type = g['transaction_type'] ?? 'unknown';
+                                final qty =
+                                    (g['quantity'] as num?)?.toInt() ?? 0;
+                                if (dayGallonSummary.containsKey(type))
+                                  dayGallonSummary[type] =
+                                      (dayGallonSummary[type] ?? 0) + qty;
+                              }
+                              for (final e in dayData['expenses']) {
+                                dayExpenses +=
+                                    (e['amount'] as num?)?.toDouble() ?? 0.0;
+                              }
+                              dayProfit = dayCollected - dayProductionCost;
+                              return Card(
+                                margin: const EdgeInsets.symmetric(
+                                    horizontal: 16, vertical: 8),
+                                child: ExpansionTile(
+                                  title: Text(dayTitle,
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.bold)),
+                                  children: [
+                                    Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 16, vertical: 8),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text('المنتجات المباعة:',
+                                              style: const TextStyle(
+                                                  fontWeight: FontWeight.bold)),
+                                          ...dayProducts.entries.map((e) => Text(
+                                              '${e.key}: ${e.value['quantity']} (${_currency.format(e.value['total'])})')),
+                                          const SizedBox(height: 8),
+                                          Text('الجالونات:',
+                                              style: const TextStyle(
+                                                  fontWeight: FontWeight.bold)),
+                                          Text(
+                                              'إيداع: ${dayGallonSummary['deposit']}'),
+                                          Text(
+                                              'شراء: ${dayGallonSummary['purchase']}'),
+                                          Text(
+                                              'إرجاع: ${dayGallonSummary['return']}'),
+                                          const SizedBox(height: 8),
+                                          Text(
+                                              'إجمالي المبلغ المحصل: ${_currency.format(dayCollected)}'),
+                                          Text(
+                                              'تكلفة الإنتاج: ${_currency.format(dayProductionCost)}'),
+                                          Text(
+                                              'الربح: ${_currency.format(dayProfit)}'),
+                                          const SizedBox(height: 8),
+                                          ElevatedButton.icon(
+                                            icon: const Icon(Icons.download),
+                                            label: const Text('تصدير اليوم'),
+                                            onPressed: () => _exportPeriodExcel(
+                                                'day', dayData, 'day_$dayKey'),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            }),
+                          ],
                         ),
-                      ),
-              ),
-      ),
-    );
-  }
-
-  // بطاقة الشهر -------------------------------------------------------------
-  Widget _buildMonthCard(Map<String, dynamic> m, ColorScheme cs) {
-    final monthDt = DateTime.parse('${m['month']}-01');
-    final monthKey = m['month'] as String;
-    final daily = _dailySales.where((d) {
-      final dt = DateTime.parse(d['date'] as String);
-      return '${dt.year}-${dt.month.toString().padLeft(2, '0')}' == monthKey;
-    }).toList();
-
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 300),
-      margin: const EdgeInsets.symmetric(vertical: 8),
-      decoration: BoxDecoration(
-        color: cs.surface,
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            blurRadius: 6,
-            offset: const Offset(0, 3),
-            color: cs.shadow.withOpacity(.08),
-          )
-        ],
-      ),
-      child: ExpansionTile(
-        leading: Icon(Icons.bar_chart, color: cs.primary),
-        tilePadding: const EdgeInsets.symmetric(horizontal: 16),
-        childrenPadding: const EdgeInsets.only(bottom: 16),
-        title: Row(
-          children: [
-            Expanded(
-              child: Text(
-                DateFormat('MMMM yyyy', 'ar').format(monthDt),
-                style:
-                    TextStyle(fontWeight: FontWeight.w600, color: cs.onSurface),
-              ),
-            ),
-            IconButton(
-              icon: const Icon(Icons.download),
-              onPressed: () => _exportMonthlyExcel(m),
-              tooltip: 'تصدير التقرير الشهري',
-            ),
-          ],
-        ),
-        subtitle: _buildProfitIndicator(m['net_profit'] as double, cs),
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Column(
-              children: [
-                _buildMetricRow('الإيرادات', m['revenue'] as double, cs: cs),
-                _buildMetricRow('تكلفة البضاعة المباعة', m['cogs'] as double,
-                    cs: cs),
-                _buildMetricRow('المصروفات', m['expenses'] as double, cs: cs),
-                _buildMetricRow('صافي الربح', m['net_profit'] as double,
-                    isTotal: true, cs: cs),
-                const SizedBox(height: 16),
-                _buildProductSummary(
-                    m['products'] as Map<String, Map<String, dynamic>>,
-                    'ملخص المنتجات الشهري',
-                    cs),
-                const SizedBox(height: 16),
-                ...daily.map((d) => _buildDayTile(d, cs)),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // بطاقة اليوم -----------------------------------------------------------------
-  Widget _buildDayTile(Map<String, dynamic> d, ColorScheme cs) {
-    final dt = DateTime.parse(d['date'] as String);
-    final Map<String, Map<String, dynamic>> dailyProd = {
-      for (final p in d['products'] as List<dynamic>) p['name'] as String: p
-    };
-
-    return Container(
-        margin: const EdgeInsets.only(bottom: 12),
-        decoration: BoxDecoration(
-          border: Border(
-              left: BorderSide(
-                  color: cs.primary.withAlpha((.3 * 255).toInt()), width: 4)),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: ExpansionTile(
-          tilePadding: const EdgeInsets.symmetric(horizontal: 16),
-          title: Text(DateFormat('EEE, MMM d', 'ar').format(dt)),
-          subtitle: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _MiniMetric(
-                  label: 'إيراد', value: d['revenue'] as double, cs: cs),
-              _MiniMetric(label: 'تكلفة', value: d['cogs'] as double, cs: cs),
-              _MiniMetric(
-                label: 'ربح',
-                value: (d['revenue'] as double) - (d['cogs'] as double),
-                cs: cs,
-                isProfit: true,
-              ),
-              Padding(
-                padding: const EdgeInsets.only(left: 16.0, right: 16.0, top: 8),
-                child: ElevatedButton.icon(
-                  icon: const Icon(Icons.download),
-                  label: const Text('تحميل التقرير اليومي'),
-                  onPressed: () => _exportSingleDayExcel(d),
+                      );
+                    }),
+                  ],
                 ),
-              ),
-            ],
-          ),
-          children: [
-            _buildProductSummary(dailyProd, 'ملخص المنتجات اليومي', cs,
-                isDaily: true),
-          ],
-        ));
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // عناصر واجهة قابلة لإعادة الاستخدام
-  // ──────────────────────────────────────────────────────────────────────────
-  Widget _buildMetricRow(String label, double value,
-      {bool isTotal = false, required ColorScheme cs}) {
-    final isProfit = label.toLowerCase().contains('ربح');
-    final color = isProfit
-        ? (value >= 0 ? cs.tertiary : Colors.red.shade700)
-        : cs.onSurface;
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(label,
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: isTotal ? FontWeight.bold : FontWeight.normal,
-                color: color,
-              )),
-          Text(
-            _currency.format(value),
-            style: TextStyle(
-              fontSize: 16,
-              fontWeight: isTotal ? FontWeight.bold : FontWeight.w500,
-              color: color,
-            ),
-          ),
-        ],
-      ),
     );
   }
 
-  Widget _buildProductSummary(
-      Map<String, Map<String, dynamic>> products, String title, ColorScheme cs,
-      {bool isDaily = false}) {
-    final rows = products.entries.map((e) {
-      return TableRow(children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          child: Text(e.key),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          child: Text((e.value['quantity'] as double).toStringAsFixed(1)),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          child: Text(_currency.format(e.value['total'] as double)),
-        ),
-      ]);
-    }).toList();
-
-    return Padding(
-      padding: EdgeInsets.symmetric(horizontal: isDaily ? 16 : 0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: Text(title,
-                style:
-                    const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-          ),
-          Table(
-            columnWidths: const {
-              0: FlexColumnWidth(2),
-              1: FlexColumnWidth(1.5),
-              2: FlexColumnWidth(2),
-            },
-            children: [
-                  const TableRow(
-                    decoration: BoxDecoration(
-                        border: Border(bottom: BorderSide(color: Colors.grey))),
-                    children: [
-                      Padding(
-                        padding: EdgeInsets.only(bottom: 8),
-                        child: Text('المنتج',
-                            style: TextStyle(fontWeight: FontWeight.bold)),
-                      ),
-                      Padding(
-                        padding: EdgeInsets.only(bottom: 8),
-                        child: Text('الكمية',
-                            style: TextStyle(fontWeight: FontWeight.bold)),
-                      ),
-                      Padding(
-                        padding: EdgeInsets.only(bottom: 8),
-                        child: Text('المجموع',
-                            style: TextStyle(fontWeight: FontWeight.bold)),
-                      ),
-                    ],
-                  ),
-                ] +
-                rows,
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildProfitIndicator(double netProfit, ColorScheme cs) {
-    final isPositive = netProfit >= 0;
-    return Row(
-      children: [
-        Icon(isPositive ? Icons.arrow_upward : Icons.arrow_downward,
-            color: isPositive ? Colors.green.shade700 : Colors.red.shade700,
-            size: 18),
-        const SizedBox(width: 4),
-        Text(
-          _currency.format(netProfit),
-          style: TextStyle(
-              fontWeight: FontWeight.w500,
-              color: isPositive ? Colors.green.shade700 : Colors.red.shade700),
-        ),
-      ],
-    );
-  }
-
-  Future<void> _exportSingleDayExcel(Map<String, dynamic> day) async {
-    if (!await requestStoragePermission(context)) return;
-
-    try {
-      final excel = xls.Excel.createExcel();
-      final sheet = excel['Day Summary'];
-
-      final date = day['date'] as String;
-      final revenue = day['revenue'] as double;
-      final cogs = day['cogs'] as double;
-      final profit = revenue - cogs;
-      final products = day['products'] as List<dynamic>;
-      final rawSales = day['rawSales'] as List<dynamic>;
-
-      // Get daily expenses
-      final dayExpenses = _expenses.where((e) => e['date'] == date).toList();
-      final totalExpenses = dayExpenses.fold<double>(
-          0, (sum, exp) => sum + (exp['amount'] as double));
-
-      // Header with date
-      sheet.appendRow(['التقرير اليومي', '']);
-      sheet.appendRow(['التاريخ', date]);
-      sheet.appendRow(['']);
-
-      // Summary section
-      sheet.appendRow(['الملخص اليومي', '']);
-      sheet.appendRow(['الإيرادات', revenue]);
-      sheet.appendRow(['تكلفة البضاعة المباعة', cogs]);
-      sheet.appendRow(['الربح', profit]);
-      sheet.appendRow(['المصروفات', totalExpenses]);
-      sheet.appendRow(['صافي الربح بعد المصروفات', profit - totalExpenses]);
-      sheet.appendRow(['']);
-
-      // Products sold section
-      sheet.appendRow(['المنتجات المباعة', '']);
-      sheet.appendRow(['المنتج', 'الكمية', 'المجموع']);
-
-      for (final p in products) {
-        sheet.appendRow([p['name'], p['quantity'], p['total']]);
+  String _translateEventType(String type, {String? saleType}) {
+    if (type == 'sale') {
+      if (saleType == 'deposit_given' || saleType == 'deposit') {
+        return 'بيع كوديعة';
+      } else if (saleType == 'deposit_paid') {
+        return 'شراء من الوديعة';
+      } else {
+        return 'بيع';
       }
-      sheet.appendRow(['']);
-
-      // Detailed sales section
-      sheet.appendRow(['التفاصيل الكاملة للمبيعات', '']);
-      sheet.appendRow([
-        'الوقت',
-        'العميل',
-        'المنتج',
-        'الكمية',
-        'السعر',
-        'المجموع',
-        'حالة الدفع',
-        'البائع',
-        'الموقع'
-      ]);
-
-      for (final sale in rawSales) {
-        final createdAt = DateFormat('HH:mm')
-            .format(DateTime.parse(sale['created_at']).toLocal());
-        final customer = sale['customer']?['name']?.toString() ?? 'غير معروف';
-        final product = sale['product']?['name']?.toString() ?? 'غير معروف';
-        final quantity = sale['quantity'];
-        final price = sale['price_per_unit'];
-        final total = sale['total_amount'];
-        final status =
-            _translatePaymentStatus(sale['payment_status'] as String? ?? '');
-        final seller = sale['seller'] != null
-            ? '${sale['seller']['first_name']} ${sale['seller']['last_name']}'
-            : 'غير معروف';
-        final location = sale['location']?['name']?.toString() ?? 'غير معروف';
-
-        sheet.appendRow([
-          createdAt,
-          customer,
-          product,
-          quantity,
-          price,
-          total,
-          status,
-          seller,
-          location
-        ]);
-      }
-
-      // Expenses section
-      if (dayExpenses.isNotEmpty) {
-        sheet.appendRow(['']);
-        sheet.appendRow(['المصروفات اليومية', '']);
-        sheet.appendRow(['الوصف', 'المبلغ']);
-
-        for (final exp in dayExpenses) {
-          sheet.appendRow(
-              [exp['description'] as String? ?? 'بدون وصف', exp['amount']]);
-        }
-
-        sheet.appendRow(['الإجمالي', totalExpenses]);
-      }
-
-      final fileBytes = excel.encode();
-      final downloadsDir =
-          Directory('/storage/emulated/0/Download/alrubaspreadsheet');
-      if (!await downloadsDir.exists()) {
-        await downloadsDir.create(recursive: true);
-      }
-
-      final filePath = '${downloadsDir.path}/day_$date.xlsx';
-      final file = File(filePath)..createSync(recursive: true);
-      file.writeAsBytesSync(fileBytes!);
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('تم تصدير التقرير اليومي إلى: $filePath')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('حدث خطأ أثناء التصدير: $e')),
-        );
-      }
-      print('Daily Excel export error: $e');
+    } else if (type == 'payment') {
+      return 'دفعة';
+    } else if (type == 'gallon') {
+      return 'معاملة جالون';
     }
+    return type;
   }
 
-  Future<void> _exportMonthlyExcel(Map<String, dynamic> month) async {
-    if (!await requestStoragePermission(context)) return;
-
-    try {
-      final excel = xls.Excel.createExcel();
-      final summarySheet = excel['ملخص الشهر'];
-      final detailsSheet = excel['تفاصيل المبيعات'];
-      final expensesSheet = excel['المصروفات']; // New expenses sheet
-
-      final monthKey = month['month'] as String;
-      final monthTitle =
-          DateFormat('MMMM yyyy', 'ar').format(DateTime.parse('$monthKey-01'));
-
-      // Month summary sheet
-      summarySheet.appendRow(['التقرير الشهري', '']);
-      summarySheet.appendRow(['الشهر', monthTitle]);
-      summarySheet.appendRow(['']);
-
-      // Financial summary
-      summarySheet.appendRow(['الملخص المالي', '']);
-      summarySheet.appendRow(['الإيرادات', month['revenue']]);
-      summarySheet.appendRow(['تكلفة البضاعة المباعة', month['cogs']]);
-      summarySheet.appendRow(['المصروفات', month['expenses']]);
-      summarySheet.appendRow(['صافي الربح', month['net_profit']]);
-      summarySheet.appendRow(['']);
-
-      // Product summary
-      summarySheet.appendRow(['المنتجات المباعة', '']);
-      summarySheet.appendRow(['المنتج', 'الكمية', 'المجموع']);
-
-      final products = month['products'] as Map<String, Map<String, dynamic>>;
-      for (final entry in products.entries) {
-        summarySheet.appendRow([
-          entry.key,
-          entry.value['quantity'],
-          entry.value['total'],
-        ]);
-      }
-
-      // Daily summaries
-      summarySheet.appendRow(['']);
-      summarySheet.appendRow(['الملخص اليومي', '']);
-      summarySheet
-          .appendRow(['التاريخ', 'الإيرادات', 'التكلفة', 'الربح', 'المصروفات']);
-
-      final dailySales = _dailySales.where((d) {
-        final dt = DateTime.parse(d['date'] as String);
-        return '${dt.year}-${dt.month.toString().padLeft(2, '0')}' == monthKey;
-      }).toList();
-
-      for (final day in dailySales) {
-        final dayExpenses = _expenses
-            .where((e) => e['date'] == day['date'])
-            .fold<double>(0, (sum, exp) => sum + (exp['amount'] as double));
-
-        summarySheet.appendRow([
-          day['date'],
-          day['revenue'],
-          day['cogs'],
-          (day['revenue'] as double) - (day['cogs'] as double),
-          dayExpenses
-        ]);
-      }
-
-      // Detailed sales sheet
-      detailsSheet.appendRow(['تفاصيل جميع المبيعات للشهر', '']);
-      detailsSheet.appendRow([
-        'التاريخ',
-        'الوقت',
-        'العميل',
-        'المنتج',
-        'الكمية',
-        'السعر',
-        'المجموع',
-        'حالة الدفع',
-        'البائع',
-        'الموقع'
-      ]);
-
-      for (final day in dailySales) {
-        final rawSales = day['rawSales'] as List<dynamic>;
-        for (final sale in rawSales) {
-          final date = DateFormat('yyyy-MM-dd')
-              .format(DateTime.parse(sale['created_at']).toLocal());
-          final time = DateFormat('HH:mm')
-              .format(DateTime.parse(sale['created_at']).toLocal());
-          final customer = sale['customer']?['name']?.toString() ?? 'غير معروف';
-          final product = sale['product']?['name']?.toString() ?? 'غير معروف';
-          final quantity = sale['quantity'];
-          final price = sale['price_per_unit'];
-          final total = sale['total_amount'];
-          final status =
-              _translatePaymentStatus(sale['payment_status'] as String? ?? '');
-          final seller = sale['seller'] != null
-              ? '${sale['seller']['first_name']} ${sale['seller']['last_name']}'
-              : 'غير معروف';
-          final location = sale['location']?['name']?.toString() ?? 'غير معروف';
-
-          detailsSheet.appendRow([
-            date,
-            time,
-            customer,
-            product,
-            quantity,
-            price,
-            total,
-            status,
-            seller,
-            location
-          ]);
-        }
-      }
-
-      // Expenses sheet
-      expensesSheet.appendRow(['تفاصيل المصروفات الشهرية', '']);
-      expensesSheet.appendRow(['التاريخ', 'الوصف', 'المبلغ']);
-
-      final monthExpenses = _expenses.where((e) {
-        final dt = DateTime.parse(e['date'] as String);
-        return '${dt.year}-${dt.month.toString().padLeft(2, '0')}' == monthKey;
-      }).toList();
-
-      for (final exp in monthExpenses) {
-        expensesSheet.appendRow([
-          exp['date'],
-          exp['description'] as String? ?? 'بدون وصف',
-          exp['amount']
-        ]);
-      }
-
-      expensesSheet.appendRow(['الإجمالي', '', month['expenses']]);
-
-      final downloadsDir =
-          Directory('/storage/emulated/0/Download/alrubaspreadsheet');
-      final filePath = '${downloadsDir.path}/month_$monthKey.xlsx';
-      final fileBytes = excel.encode();
-      final file = File(filePath)..createSync(recursive: true);
-      file.writeAsBytesSync(fileBytes!);
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('تم تصدير التقرير الشهري إلى: $filePath')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('حدث خطأ أثناء التصدير: $e')),
-        );
-      }
-      print('Monthly Excel export error: $e');
-    }
-  }
-
-  String _translatePaymentStatus(String status) {
+  String _translateStatusFull(String status, {String? saleType}) {
+    // Use the same logic as the dashboard for status translation
     switch (status.toLowerCase()) {
       case 'paid':
+        if (saleType == 'deposit_given' || saleType == 'deposit') {
+          return 'مدفوع (وديعة)';
+        }
         return 'مدفوع';
       case 'unpaid':
         return 'غير مدفوع';
+      case 'partial':
+        return 'دفعة جزئية';
       case 'deposit':
         return 'عربون';
+      case 'deposit_paid':
+        return 'مدفوع من الوديعة';
+      case 'purchase':
+        return 'شراء من الوديعة';
+      case 'return':
+        return 'إرجاع وديعة';
       default:
         return status;
     }
   }
 
-  Future<void> _exportYearlyExcel() async {
-    if (!await requestStoragePermission(context)) return;
+  String safeString(dynamic value, [String fallback = 'غير متوفر']) {
+    if (value == null) return fallback;
+    if (value is String) return value;
+    print(
+        '[EXPORT][WARNING] Expected String but got: \\${value.runtimeType} value=\\$value');
+    return fallback;
+  }
 
+  DateTime? safeParseDate(dynamic value) {
+    if (value is String && value.isNotEmpty) {
+      try {
+        return DateTime.parse(value).toLocal();
+      } catch (e) {
+        print('[EXPORT][WARNING] Invalid date format: $value');
+        return null;
+      }
+    }
+    return null;
+  }
+
+  @override
+  Future<void> _exportPeriodExcel(
+      String period, Map<String, dynamic> data, String fileName) async {
     try {
+      print('[EXPORT] Starting export for period: $period, file: $fileName');
       final excel = xls.Excel.createExcel();
-      final expensesSheet = excel['المصروفات السنوية']; // New expenses sheet
+      final sheet = excel['Sheet1'];
+      final numberFormat = NumberFormat.decimalPattern('ar');
+      // Header
+      final today = DateTime.now();
+      sheet.appendRow(['التقرير اليومي']);
+      sheet.appendRow(['التاريخ', DateFormat('yyyy-MM-dd').format(today)]);
+      sheet.appendRow(['']);
+      // Summary section
+      double totalSales = 0;
+      double totalProductionCost = 0;
+      double totalPayments = 0;
+      double monthExpenses = 0;
+      final Map<String, double> productSummary = {};
+      // Build unified event list as in manager dashboard
+      final List<Map<String, dynamic>> events = [];
+      final Set<String> shownDepositSales = {};
+      final Set<String> fullyPaidDepositIds = {
+        for (final payment in data['payments'] ?? [])
+          if ((payment['sale']?['payment_status'] as String?)?.toLowerCase() ==
+                  'paid' &&
+              (payment['sale']?['sale_type'] as String?) == 'deposit_given')
+            payment['sale']?['id'] as String? ?? ''
+      };
+      final Map<String, Map<String, dynamic>> fullyPaidDepositPayments = {
+        for (final payment in data['payments'] ?? [])
+          if ((payment['sale']?['payment_status'] as String?)?.toLowerCase() ==
+                  'paid' &&
+              (payment['sale']?['sale_type'] as String?) == 'deposit_given')
+            (payment['sale']?['id'] as String? ?? ''): payment
+      };
+      // Build a map of saleId to total paid
+      final Map<String, double> salePayments = {};
+      for (final payment in data['payments'] ?? []) {
+        final sale = payment['sale'] as Map<String, dynamic>?;
+        if (sale == null) continue;
+        final saleId = safeString(sale['id'], '');
+        final amount = (payment['amount'] as num?)?.toDouble() ?? 0.0;
+        if (saleId.isNotEmpty) {
+          salePayments[saleId] = (salePayments[saleId] ?? 0) + amount;
+        }
+      }
+      // Add all sales events
+      for (final sale in data['sales'] ?? []) {
+        final saleId = safeString(sale['id'], '');
+        if (saleId.isEmpty) {
+          print('[EXPORT][WARNING] sale: id is null or empty: $saleId');
+          continue;
+        }
+        if (fullyPaidDepositIds.contains(saleId)) continue;
+        final saleType = safeString(sale['sale_type'], '');
+        final paymentStatus = safeString(sale['payment_status'], '');
+        final dateStr = safeString(
+            sale['payment_date'], safeString(sale['created_at'], ''));
+        final dt = safeParseDate(dateStr);
+        if (dateStr.isNotEmpty && dt == null) {
+          print('[EXPORT][WARNING] Could not parse date for sale: $dateStr');
+        }
+        if (paymentStatus == 'deposit') {
+          if (!shownDepositSales.contains(saleId)) {
+            events.add({
+              'type': 'sale',
+              'datetime': dt,
+              'data': sale,
+              'saleType': saleType,
+              'paymentStatus': paymentStatus,
+            });
+            shownDepositSales.add(saleId);
+          }
+        } else {
+          events.add({
+            'type': 'sale',
+            'datetime': dt,
+            'data': sale,
+            'saleType': saleType,
+            'paymentStatus': paymentStatus,
+          });
+        }
+      }
+      // Add merged event for fully paid deposits
+      for (final entry in fullyPaidDepositPayments.entries) {
+        final payment = entry.value;
+        final sale = payment['sale'] as Map<String, dynamic>;
+        final saleId = safeString(sale['id'], '');
+        if (saleId.isEmpty) {
+          print(
+              '[EXPORT][WARNING] fullyPaidDepositPayments: sale id is null or empty: $saleId');
+          continue;
+        }
+        final paymentDate = safeString(payment['payment_date'], '');
+        final paymentDt = safeParseDate(paymentDate);
+        if (paymentDate.isNotEmpty && paymentDt == null) {
+          print('[EXPORT][WARNING] Could not parse payment date: $paymentDate');
+        }
+        events.add({
+          'type': 'sale',
+          'datetime': paymentDt,
+          'data': sale,
+          'saleType': 'deposit_paid',
+          'paymentStatus': 'deposit_paid',
+          'payment': payment,
+        });
+      }
+      // Step 1: Build a set of sale IDs paid at creation
+      final Set<String> paidAtCreationSaleIds = {};
+      for (final sale in data['sales'] ?? []) {
+        final saleId = safeString(sale['id'], '');
+        if (saleId.isEmpty) continue;
+        if (safeString(sale['payment_status'], '') == 'paid') {
+          final saleDate = safeParseDate(sale['created_at']);
+          for (final payment in data['payments'] ?? []) {
+            if (payment['sale']?['id'] == saleId) {
+              final paymentDate = safeParseDate(payment['payment_date']);
+              if (saleDate != null && paymentDate != null) {
+                final diff = paymentDate.difference(saleDate).inSeconds.abs();
+                if (diff <= 60) {
+                  paidAtCreationSaleIds.add(saleId);
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+      // Build location map for accurate location resolution
+      final locationsRaw = await _supabase.from('locations').select('id, name');
+      final locationMap = <String, String>{};
+      for (final location in locationsRaw) {
+        locationMap[location['id']] = location['name'];
+      }
 
-      // Add monthly summaries
-      for (final month in _monthlySummary) {
-        final sheet = excel[month['month']];
-        final monthTitle = DateFormat('MMMM yyyy', 'ar')
-            .format(DateTime.parse('${month['month']}-01'));
-
-        sheet.appendRow(['الشهر', monthTitle]);
-        sheet.appendRow([]);
-        sheet.appendRow(['المنتج', 'الكمية', 'المجموع']);
-
-        final products = month['products'] as Map<String, Map<String, dynamic>>;
-        for (final entry in products.entries) {
-          sheet.appendRow([
-            entry.key,
-            entry.value['quantity'],
-            entry.value['total'],
-          ]);
+      // Add events for payments (only for late/partial payments, not instant payments)
+      // Group payments by saleId
+      final Map<String, List<Map<String, dynamic>>> paymentsBySale = {};
+      for (final payment in data['payments'] ?? []) {
+        final sale = payment['sale'] as Map<String, dynamic>?;
+        if (sale == null) continue;
+        final saleId = safeString(sale['id'], '');
+        if (saleId.isEmpty) continue;
+        if (!paymentsBySale.containsKey(saleId)) {
+          paymentsBySale[saleId] = [];
+        }
+        paymentsBySale[saleId]!.add(payment);
+      }
+      for (final saleId in paymentsBySale.keys) {
+        // Skip if this sale is paid at creation
+        if (paidAtCreationSaleIds.contains(saleId)) continue;
+        final salePaymentsList = paymentsBySale[saleId]!;
+        // Sort payments by payment_date
+        salePaymentsList.sort((a, b) => safeParseDate(a['payment_date'])!
+            .compareTo(safeParseDate(b['payment_date'])!));
+        double cumulativePaid = 0.0;
+        final sale = salePaymentsList.first['sale'] as Map<String, dynamic>;
+        final saleTotal = (sale['total_amount'] as num?)?.toDouble() ?? 0.0;
+        for (int i = 0; i < salePaymentsList.length; i++) {
+          final payment = salePaymentsList[i];
+          final paymentDate = safeParseDate(payment['payment_date']);
+          if (paymentDate == null) continue;
+          final amount = (payment['amount'] as num?)?.toDouble() ?? 0.0;
+          cumulativePaid += amount;
+          String paymentEventType = '';
+          String paymentStatus = '';
+          if (i == salePaymentsList.length - 1 &&
+              (cumulativePaid >= saleTotal)) {
+            paymentEventType = 'دفعة كاملة (تسوية متأخرة)';
+            paymentStatus = 'دفعة كاملة (تسوية متأخرة)';
+          } else {
+            paymentEventType = 'دفعة جزئية (تسوية متأخرة)';
+            paymentStatus = 'دفعة جزئية (تسوية متأخرة)';
+          }
+          final productName = sale['product']?['name'] != null
+              ? safeString(sale['product']?['name'])
+              : '';
+          final qty = sale['quantity'] != null
+              ? numberFormat.format(sale['quantity'])
+              : '';
+          final priceCol = (payment['amount'] as num?) != null
+              ? numberFormat.format((payment['amount'] as num?)?.toDouble())
+              : '';
+          final totalCol = 'تسوية بيع قديم';
+          // Use payment's own seller if available, else sale's seller
+          String seller = '';
+          if (payment['seller'] != null &&
+              payment['seller']['first_name'] != null &&
+              payment['seller']['last_name'] != null) {
+            seller = safeString(payment['seller']['first_name']) +
+                ' ' +
+                safeString(payment['seller']['last_name']);
+          } else if (sale['seller'] != null &&
+              sale['seller']['first_name'] != null &&
+              sale['seller']['last_name'] != null) {
+            seller = safeString(sale['seller']['first_name']) +
+                ' ' +
+                safeString(sale['seller']['last_name']);
+          }
+          // Get location using location_id if available
+          String location = '';
+          if (sale['location'] != null && sale['location']['name'] != null) {
+            location = safeString(sale['location']['name']);
+          } else if (sale['customer'] != null &&
+              sale['customer']['location_id'] != null) {
+            location =
+                locationMap[sale['customer']['location_id']] ?? 'غير متوفر';
+          } else if (sale['customer'] != null &&
+              sale['customer']['location'] != null) {
+            location = safeString(sale['customer']['location']);
+          }
+          if (location.isEmpty) location = 'غير متوفر';
+          events.add({
+            'type': 'payment',
+            'datetime': paymentDate,
+            'data': payment,
+            'saleType': safeString(sale['sale_type'], ''),
+            'paymentStatus': paymentStatus,
+            'eventTypeCol': paymentEventType,
+            'transactionTypeCol': paymentEventType,
+            'productName': productName,
+            'qty': qty,
+            'priceCol': priceCol,
+            'totalCol': totalCol,
+            'seller': seller,
+            'location': location,
+            'customerName': sale['customer']?['name'] ?? '',
+          });
+        }
+      }
+      // Add all gallon transactions (not linked to normal sales)
+      for (final g in data['gallons'] ?? []) {
+        final saleId = safeString(g['sale_id'], '');
+        if (saleId.isNotEmpty) {
+          print('[EXPORT][DEBUG] Skipping gallon with sale_id: $saleId');
+          continue;
+        }
+        final dateStr = safeString(g['created_at'], '');
+        final dt = safeParseDate(dateStr);
+        if (dateStr.isNotEmpty && dt == null) {
+          print(
+              '[EXPORT][WARNING] Could not parse gallon created_at: $dateStr');
+        }
+        // Get location using customer's location_id
+        String location = '';
+        if (g['customer'] != null) {
+          final customer = g['customer'];
+          if (customer['location_id'] != null) {
+            location = locationMap[customer['location_id']] ?? 'غير متوفر';
+          } else if (customer['location'] != null) {
+            if (customer['location'] is Map &&
+                customer['location']['name'] != null) {
+              location = safeString(customer['location']['name']);
+            } else if (customer['location'] is String) {
+              location = safeString(customer['location']);
+            }
+          }
+        }
+        if (location.isEmpty) {
+          location = 'غير متوفر';
         }
 
-        sheet.appendRow([]);
-        sheet.appendRow(['الإيرادات', month['revenue']]);
-        sheet.appendRow(['تكلفة البضاعة المباعة', month['cogs']]);
-        sheet.appendRow(['المصروفات', month['expenses']]);
-        sheet.appendRow(['صافي الربح', month['net_profit']]);
+        events.add({
+          'type': 'gallon',
+          'datetime': dt,
+          'data': g,
+          'saleType': null,
+          'paymentStatus': safeString(g['status'], ''),
+          'location': location,
+        });
       }
-
-      // Add yearly expenses summary
-      expensesSheet.appendRow(['المصروفات السنوية', '']);
-      expensesSheet.appendRow(['الشهر', 'المبلغ']);
-
-      double yearlyExpenses = 0.0;
-      for (final month in _monthlySummary) {
-        final monthTitle = DateFormat('MMMM yyyy', 'ar')
-            .format(DateTime.parse('${month['month']}-01'));
-
-        expensesSheet.appendRow([monthTitle, month['expenses']]);
-
-        yearlyExpenses += month['expenses'] as double;
+      // Sort all events by datetime
+      events.sort((a, b) {
+        final adt = a['datetime'] as DateTime?;
+        final bdt = b['datetime'] as DateTime?;
+        if (adt == null && bdt == null) return 0;
+        if (adt == null) return 1;
+        if (bdt == null) return -1;
+        return adt.compareTo(bdt);
+      });
+      // Calculate summary values and product summary
+      for (final event in events) {
+        if (event['type'] == 'sale') {
+          final sale = event['data'] as Map<String, dynamic>;
+          final qty = (sale['quantity'] as num?)?.toDouble() ?? 0.0;
+          final price = (sale['price_per_unit'] as num?)?.toDouble() ?? 0.0;
+          final cost =
+              (sale['product']?['production_cost'] as num?)?.toDouble() ?? 0.0;
+          final total = (sale['total_amount'] as num?)?.toDouble() ?? 0.0;
+          final productName = safeString(sale['product']?['name']);
+          totalSales += total;
+          totalProductionCost += qty * cost;
+          productSummary[productName] =
+              (productSummary[productName] ?? 0) + qty;
+        } else if (event['type'] == 'payment') {
+          final p = event['data'] as Map<String, dynamic>;
+          final amount = (p['amount'] as num?)?.toDouble() ?? 0.0;
+          totalPayments += amount;
+        }
       }
+      if (period == 'month') {
+        for (final e in data['expenses'] ?? []) {
+          monthExpenses += (e['amount'] as num?)?.toDouble() ?? 0.0;
+        }
+      }
+      // Summary section rows
+      sheet.appendRow(['الملخص اليومي']);
+      sheet.appendRow(['الإيرادات', numberFormat.format(totalSales)]);
+      sheet.appendRow(
+          ['تكلفة الصناعة', numberFormat.format(totalProductionCost)]);
+      sheet.appendRow([
+        'صافي الربح',
+        numberFormat.format(totalSales - totalProductionCost)
+      ]);
+      sheet.appendRow(['المصروفات', numberFormat.format(monthExpenses)]);
+      sheet.appendRow([
+        'صافي الربح بعد المصروفات',
+        numberFormat.format(totalSales - totalProductionCost - monthExpenses)
+      ]);
+      sheet.appendRow(['']);
+      // Product summary table
+      sheet.appendRow(['المنتج', 'الكمية', 'المجموع']);
+      for (final entry in productSummary.entries) {
+        // Find total per product
+        double totalPerProduct = 0;
+        for (final event in events) {
+          if (event['type'] == 'sale') {
+            final sale = event['data'] as Map<String, dynamic>;
+            final productName = safeString(sale['product']?['name']);
+            if (productName == entry.key) {
+              final total = (sale['total_amount'] as num?)?.toDouble() ?? 0.0;
+              totalPerProduct += total;
+            }
+          }
+        }
+        sheet.appendRow([
+          entry.key,
+          numberFormat.format(entry.value),
+          numberFormat.format(totalPerProduct),
+        ]);
+      }
+      sheet.appendRow(['']);
+      // Details table header
+      sheet.appendRow([
+        'نوع الحدث',
+        'نوع المعاملة',
+        'الوقت',
+        'العميل',
+        'المنتج',
+        'الكمية',
+        'السعر',
+        'المجموع',
+        'حالة الدفع',
+        'البائع'
+      ]);
 
-      expensesSheet.appendRow(['الإجمالي السنوي', yearlyExpenses]);
-
-      final downloadsDir =
-          Directory('/storage/emulated/0/Download/alrubaspreadsheet');
-      final filePath =
-          '${downloadsDir.path}/yearly_summary_${DateTime.now().year}.xlsx';
+      // Group events by day
+      final Map<String, List<Map<String, dynamic>>> eventsByDay = {};
+      for (final event in events) {
+        final dt = event['datetime'] as DateTime?;
+        if (dt == null) continue;
+        final dayKey = DateFormat('yyyy-MM-dd').format(dt);
+        if (!eventsByDay.containsKey(dayKey)) {
+          eventsByDay[dayKey] = [];
+        }
+        eventsByDay[dayKey]!.add(event);
+      }
+      // Write event rows, matching dashboard logic
+      for (final day in eventsByDay.keys) {
+        final dayEvents = eventsByDay[day]!;
+        // Find all saleIds with payment events on this day
+        final Set<String> salesWithPayments = {
+          for (final e in dayEvents)
+            if (e['type'] == 'payment') (e['data']['sale']?['id'] ?? '')
+        };
+        for (final event in dayEvents) {
+          final type = safeString(event['type'], '');
+          if (type == 'sale') {
+            final sale = event['data'] as Map<String, dynamic>;
+            final saleId = safeString(sale['id'], '');
+            // Only show sale row if there are no payment events for this sale on this day
+            if (salesWithPayments.contains(saleId)) continue;
+          }
+          final dt = event['datetime'] as DateTime?;
+          final timeCol = dt != null ? DateFormat('HH:mm').format(dt) : '';
+          final eventTypeCol =
+              _translateEventType(type, saleType: event['saleType']);
+          String transactionTypeCol = '';
+          if (type == 'gallon') {
+            final g = event['data'] as Map<String, dynamic>;
+            final txType = safeString(g['transaction_type'], '');
+            switch (txType) {
+              case 'deposit':
+                transactionTypeCol = 'إيداع';
+                break;
+              case 'purchase':
+                transactionTypeCol = 'شراء';
+                break;
+              case 'return':
+                transactionTypeCol = 'إرجاع';
+                break;
+              default:
+                transactionTypeCol = 'معاملة جالون';
+            }
+          } else if (type == 'payment') {
+            // Determine if this payment is partial or full
+            final p = event['data'] as Map<String, dynamic>;
+            final sale = p['sale'] as Map<String, dynamic>?;
+            final saleId = sale != null ? safeString(sale['id'], '') : '';
+            double paid = salePayments[saleId] ?? 0.0;
+            double saleTotal =
+                (sale?['total_amount'] as num?)?.toDouble() ?? 0.0;
+            if (paid < saleTotal) {
+              transactionTypeCol = 'دفعة جزئية (تسوية متأخرة)';
+            } else {
+              transactionTypeCol = 'دفعة كاملة (تسوية متأخرة)';
+            }
+          } else {
+            transactionTypeCol = '';
+          }
+          if (type == 'sale') {
+            final sale = event['data'] as Map<String, dynamic>;
+            final saleId = safeString(sale['id'], '');
+            final qty = (sale['quantity'] as num?)?.toDouble();
+            final price = (sale['price_per_unit'] as num?)?.toDouble();
+            final total = (sale['total_amount'] as num?)?.toDouble();
+            final saleType = safeString(event['saleType'], '');
+            final productName = safeString(sale['product']?['name']);
+            final seller = sale['seller'] != null &&
+                    sale['seller']['first_name'] != null &&
+                    sale['seller']['last_name'] != null
+                ? safeString(sale['seller']['first_name']) +
+                    ' ' +
+                    safeString(sale['seller']['last_name'])
+                : '';
+            // Get location using location_id if available
+            String location = '';
+            if (sale['location'] != null && sale['location']['name'] != null) {
+              location = safeString(sale['location']['name']);
+            } else if (sale['customer'] != null &&
+                sale['customer']['location_id'] != null) {
+              location =
+                  locationMap[sale['customer']['location_id']] ?? 'غير متوفر';
+            } else if (sale['customer'] != null &&
+                sale['customer']['location'] != null) {
+              location = safeString(sale['customer']['location']);
+            }
+            if (location.isEmpty) location = 'غير متوفر';
+            // Calculate payment status
+            double paid = salePayments[saleId] ?? 0.0;
+            String paymentStatus = 'غير مدفوع';
+            if (paid == 0) {
+              paymentStatus = 'غير مدفوع';
+            } else if (paid > 0 && paid < (total ?? 0.0)) {
+              paymentStatus = 'مدفوع جزئياً';
+            } else if (paid >= (total ?? 0.0)) {
+              paymentStatus = 'مدفوع';
+            }
+            sheet.appendRow([
+              eventTypeCol,
+              transactionTypeCol,
+              timeCol,
+              safeString(sale['customer']?['name']),
+              productName,
+              qty != null ? numberFormat.format(qty) : '',
+              price != null ? numberFormat.format(price) : '',
+              total != null ? numberFormat.format(total) : '',
+              paymentStatus,
+              seller,
+            ]);
+          } else if (type == 'payment') {
+            sheet.appendRow([
+              event['eventTypeCol'],
+              event['transactionTypeCol'],
+              timeCol,
+              event['customerName'],
+              event['productName'],
+              event['qty'],
+              event['priceCol'],
+              event['totalCol'],
+              event['paymentStatus'],
+              event['seller'],
+            ]);
+          } else if (type == 'gallon') {
+            final g = event['data'] as Map<String, dynamic>;
+            final qty = (g['quantity'] as num?)?.toDouble();
+            final amount = (g['amount'] as num?)?.toDouble();
+            // Use joined product name if available
+            String productName = '';
+            if (g['product'] != null && g['product']['name'] != null) {
+              productName = safeString(g['product']['name']);
+            } else if (g['product_name'] != null) {
+              productName = safeString(g['product_name']);
+            }
+            // Get location from event
+            final location = event['location'] as String? ?? 'غير متوفر';
+            final seller = g['seller'] != null &&
+                    g['seller']['first_name'] != null &&
+                    g['seller']['last_name'] != null
+                ? safeString(g['seller']['first_name']) +
+                    ' ' +
+                    safeString(g['seller']['last_name'])
+                : '';
+            // Try to get price and total from product or related sale if available
+            String price = '';
+            String total = '';
+            if (g['product'] != null &&
+                g['product']['production_cost'] != null) {
+              price = numberFormat
+                  .format((g['product']['production_cost'] as num?) ?? 0);
+              if (qty != null && g['product']['production_cost'] != null) {
+                total = numberFormat
+                    .format((g['product']['production_cost'] as num) * qty);
+              } else {
+                total = '';
+              }
+            } else if (g['amount'] != null) {
+              total = numberFormat.format(amount ?? 0);
+            }
+            // For returns, set payment status to 'إرجاع'
+            String gallonStatus = _translateStatusFull(
+                safeString(g['status'], ''),
+                saleType: transactionTypeCol);
+            if (transactionTypeCol == 'إرجاع') {
+              gallonStatus = 'إرجاع';
+            }
+            sheet.appendRow([
+              eventTypeCol,
+              transactionTypeCol,
+              timeCol,
+              g['customer']?['name'] ?? '',
+              productName,
+              qty != null ? numberFormat.format(qty) : '',
+              price,
+              total,
+              gallonStatus,
+              seller,
+            ]);
+          }
+        }
+      }
       final fileBytes = excel.encode();
-      final file = File(filePath)..createSync(recursive: true);
+      // Set export path for all platforms
+      String savePath;
+      if (Platform.isAndroid) {
+        final downloads =
+            Directory('/storage/emulated/0/Download/AlrubaReports');
+        if (!await downloads.exists()) await downloads.create(recursive: true);
+        savePath = '${downloads.path}/$fileName.xlsx';
+      } else {
+        final docsDir = await getApplicationDocumentsDirectory();
+        final appFolder = Directory('${docsDir.path}/AlrubaReports');
+        if (!await appFolder.exists()) await appFolder.create(recursive: true);
+        savePath = '${appFolder.path}/$fileName.xlsx';
+      }
+      final file = File(savePath)..createSync(recursive: true);
       file.writeAsBytesSync(fileBytes!);
-
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('تم تصدير ملف السنة إلى: $filePath')),
+          SnackBar(content: Text('تم تصدير الملف إلى: $savePath')),
         );
       }
-    } catch (e) {
+    } catch (e, st) {
+      print('[EXPORT][ERROR] $e\n$st');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('حدث خطأ أثناء تصدير التقرير السنوي: $e')),
+          SnackBar(content: Text('خطأ في التصدير: $e')),
         );
       }
-      print('Yearly Excel export error: $e');
     }
   }
 }
+
+class _SummaryCard extends StatelessWidget {
+  final String title;
+  final String value;
+  final Color color;
+  const _SummaryCard(
+      {required this.title, required this.value, required this.color});
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Card(
+        color: color,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            children: [
+              Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(height: 8),
+              Text(value, style: const TextStyle(fontSize: 16)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // شريحة القياسات الصغيرة المعروضة تحت كل يوم
 // ---------------------------------------------------------------------------
@@ -884,7 +1160,7 @@ class _MiniMetric extends StatelessWidget {
 }
 
 Future<bool> requestStoragePermission(BuildContext context) async {
-   if (!Platform.isAndroid) {
+  if (!Platform.isAndroid) {
     // No permission needed for desktop
     return true;
   }
